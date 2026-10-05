@@ -39,6 +39,10 @@ Settings cfgBuildDefaults();
 // g_cfg = defaults, then flash.  Quick; call it first in setup().
 void cfgLoadFlash();
 
+// Writes the settings in force that did not come from the defaults to flash (after something changed
+// g_cfg at run time, as the serial command "batcal" does).  False if any of it could not be kept.
+bool cfgSaveToFlash();
+
 // Looks for a card.  With a settings file: applies it on top of g_cfg and saves what it changed
 // to flash.  Without one: writes an example file to the card.  Unmounts the card again.
 void cfgImportSdCard();

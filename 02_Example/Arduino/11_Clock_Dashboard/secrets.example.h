@@ -21,6 +21,11 @@
 // The README walks through creating the app and linking your account.
 #define SPOTIFY_CLIENT_ID ""
 
+// Your battery (optional): its capacity in mAh, so the Power and settings page can show the average current,
+// and a correction for the voltage the clock measures (real voltage / shown voltage, see the README).
+// #define BATTERY_CAPACITY_MAH 2500
+// #define BATTERY_CALIBRATION 1.016f
+
 // Where the clock is (optional, for the weather and the time zone).  Give coordinates, or a place
 // to look up; see config.h for the details.  Without either the clock still tells the time.
 // #define LOCATION_LATITUDE (-33.865)

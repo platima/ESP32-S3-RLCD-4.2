@@ -58,6 +58,7 @@ struct Settings {
   float indoorOffsetC = -4.0f;
   uint8_t battery = BATTERY_AUTO;
   int32_t batteryCapacityMah = 0;
+  float batteryCalibration = 1.0f;  // multiplies the measured battery voltage (real / shown); 1 = none
   bool lowBatteryShutdown = true;
   float batteryCutoffV = 3.30f;
   // --- power --------------------------------------------------------------------

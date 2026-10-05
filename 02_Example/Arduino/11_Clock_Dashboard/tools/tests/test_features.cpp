@@ -102,6 +102,7 @@ const char *kAllSettings =
     "indoor_offset = -2.5\n"
     "battery = none\n"
     "battery_capacity_mah = 2500\n"
+    "battery_calibration = 1.0157\n"
     "low_battery_shutdown = off\n"
     "battery_cutoff_v = 3.45\n"
     "cpu_mhz = 160\n"
@@ -110,7 +111,7 @@ const char *kAllSettings =
 void testSettingsTable() {
   section("settings table");
   const size_t n = settingCount();
-  CHECK(n == 26);
+  CHECK(n == 27);
   CHECK(n <= 32);  // userSet is a 32 bit mask
   CHECK_STR(settingKey(n), "");
   CHECK_STR(settingNvsKey(n), "");
@@ -1662,6 +1663,81 @@ void testBackupWifiSettings() {
   CHECK(strstr(buf, "# wifi_backup_ssid = \"Phone\"") != nullptr);
 }
 
+// ===========================================================================
+// Battery capacity and voltage calibration
+// ===========================================================================
+void testBatteryCalibrationSetting() {
+  section("battery calibration and capacity settings");
+  const Settings d;
+  CHECK_NEAR(d.batteryCalibration, 1.0, 1e-9);  // no correction unless asked for
+  CHECK(d.batteryCapacityMah == 0);
+  CHECK(!settingIsSecret(idx("battery_calibration")));
+  CHECK_STR(settingNvsKey(idx("battery_calibration")), "batcal");
+
+  // the names people will try
+  const char *names[] = {"battery_calibration", "Battery Calibration", "Battery-Calibration", "battery_cal", "adc_calibration",
+                         "ADC calibration", "voltage_calibration", "battery_scale", "battery_gain", "adc_scale"};
+  for (const char *k : names) {
+    const Applied a = apply(std::string(k) + " = 1.016");
+    if (fabs(a.s.batteryCalibration - 1.016) > 1e-6) printf("  [%s] gave %g\n", k, (double)a.s.batteryCalibration);
+    CHECK_NEAR(a.s.batteryCalibration, 1.016, 1e-6);
+    CHECK(a.r.problems() == 0 && a.r.changed == 1);
+    CHECK(settingIsUserSet(a.s, idx("battery_calibration")));
+  }
+  // spellings of the number: a decimal comma, four decimals
+  CHECK_NEAR(apply("battery_calibration = 1,016").s.batteryCalibration, 1.016, 1e-6);
+  CHECK_NEAR(apply("battery_calibration = \"1.0157\"").s.batteryCalibration, 1.0157, 1e-6);
+  CHECK_NEAR(apply("battery_calibration = 0.9847").s.batteryCalibration, 0.9847, 1e-6);
+  // the range is 0.80 to 1.25, inclusive; anything else is a mistake and changes nothing
+  CHECK_NEAR(apply("battery_calibration = 0.8").s.batteryCalibration, 0.8, 1e-6);
+  CHECK_NEAR(apply("battery_calibration = 1.25").s.batteryCalibration, 1.25, 1e-6);
+  for (const char *bad : {"0.79", "1.26", "0", "-1", "2", "abc", "1.0.1"}) {
+    const Applied a = apply(std::string("battery_calibration = ") + bad);
+    if (a.r.bad != 1) printf("  [%s] was not refused\n", bad);
+    CHECK(a.r.bad == 1 && a.r.changed == 0);
+    CHECK_NEAR(a.s.batteryCalibration, 1.0, 1e-9);
+  }
+  // forgetting it brings the default back (a build can have its own: here the pristine one)
+  Settings set;
+  set.batteryCalibration = 1.03f;
+  set.userSet |= 1u << idx("battery_calibration");
+  const Applied gone = apply("battery_calibration =", set);
+  CHECK_NEAR(gone.s.batteryCalibration, 1.0, 1e-9);
+  CHECK(gone.r.cleared == 1 && !settingIsUserSet(gone.s, idx("battery_calibration")));
+  Settings withDefault;
+  withDefault.batteryCalibration = 1.02f;  // config.h or secrets.h said so
+  Settings fromFlash = withDefault;
+  const std::string text = "battery_calibration = 1.05\n";
+  Settings defaults = withDefault;
+  applyConfigText(fromFlash, defaults, text.data(), text.size());
+  CHECK_NEAR(fromFlash.batteryCalibration, 1.05, 1e-6);
+  const std::string forget = "battery_calibration =\n";
+  applyConfigText(fromFlash, defaults, forget.data(), forget.size());
+  CHECK_NEAR(fromFlash.batteryCalibration, 1.02, 1e-6);  // back to the build's own value, not to 1
+
+  // the figure survives flash (it is stored as text) with its four decimals
+  Settings w;
+  w.batteryCalibration = 1.0157f;
+  Settings x;
+  CHECK(fmt(w, idx("battery_calibration")) == "1.0157");
+  CHECK(applyStoredSetting(x, idx("battery_calibration"), fmt(w, idx("battery_calibration")).c_str()));
+  CHECK_NEAR(x.batteryCalibration, 1.0157, 1e-6);
+  CHECK(fmt(Settings(), idx("battery_calibration")) == "1");
+
+  // the capacity: more names, and a unit
+  CHECK(apply("battery_capacity = 2500").s.batteryCapacityMah == 2500);
+  CHECK(apply("capacity_mah = 3400").s.batteryCapacityMah == 3400);
+  CHECK(apply("Battery Capacity mAh = \"2600 mAh\"").s.batteryCapacityMah == 2600);
+
+  // the example file explains the calibration and names the serial command
+  static char buf[16384];
+  const size_t n = renderExampleConfig(Settings(), "", buf, sizeof buf);
+  CHECK(n > 0);
+  CHECK(strstr(buf, "# battery_calibration = 1\n") != nullptr);
+  CHECK(strstr(buf, "batcal 4.20") != nullptr);
+  CHECK(strstr(buf, "# battery_capacity_mah = 0\n") != nullptr);
+}
+
 void testWifiPick() {
   section("backup WiFi: which network next");
   using namespace wifipick;
@@ -2129,6 +2205,7 @@ int main(int argc, char **argv) {
   testSettingsForget();
   testSettingsExample();
   testBackupWifiSettings();
+  testBatteryCalibrationSetting();
   testWifiPick();
   testWifiPickDay();
   testFirmwareLogic();

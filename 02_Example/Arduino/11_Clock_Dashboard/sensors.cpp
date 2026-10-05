@@ -67,8 +67,9 @@ BatteryReading readBattery() {
     sum += analogReadMilliVolts(PIN_BATTERY_ADC);  // factory-calibrated millivolts
     delayMicroseconds(200);
   }
-  r.volts = (sum / (float)kSamples) / 1000.0f * BATTERY_DIVIDER;
-  r.present = r.volts >= 2.5f;  // a floating / unpopulated pin reads far below any real cell
+  r.rawVolts = (sum / (float)kSamples) / 1000.0f * BATTERY_DIVIDER;
+  r.volts = r.rawVolts * g_cfg.batteryCalibration;
+  r.present = r.rawVolts >= 2.5f;  // a floating / unpopulated pin reads far below any real cell
   r.percent = r.present ? calc::batteryPercent(r.volts) : 0;
   return r;
 }

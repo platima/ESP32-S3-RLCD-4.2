@@ -183,6 +183,46 @@ static void testTimeZones() {
   setTz("UTC0");
 }
 
+// The ADC reads a few percent low: one multiplier, what a tester says over what the clock measured.
+static void testBatteryCalibration() {
+  section("battery voltage calibration");
+  float f = 0;
+  // the case that started it: a full cell is 4.20 V on the tester and 4.135 V to the clock, which calls that 93 %
+  CHECK(calc::batteryPercent(4.135f) == 93);
+  CHECK(calc::calibrationFactor(4.20f, 4.135f, &f));
+  CHECK_NEAR(f, 1.01572, 1e-4);
+  CHECK(calc::batteryPercent(4.135f * f) == 100);  // corrected, it is full (and over the 4.16 V the charge detector wants)
+  CHECK(4.135f * f >= 4.16f);
+  // the direction: a reading that is too high gets a factor under 1
+  CHECK(calc::calibrationFactor(4.20f, 4.00f, &f));
+  CHECK_NEAR(f, 1.05, 1e-6);
+  CHECK(calc::calibrationFactor(4.00f, 4.20f, &f));
+  CHECK_NEAR(f, 0.95238, 1e-4);
+  CHECK(calc::calibrationFactor(3.90f, 3.90f, &f));
+  CHECK_NEAR(f, 1.0, 1e-9);
+  // the limits are the setting's (0.80 to 1.25), inclusive
+  CHECK(calc::kCalibrationMin == 0.80f && calc::kCalibrationMax == 1.25f);
+  CHECK(calc::calibrationFactor(3.2f, 4.0f, &f) && f == 0.8f);
+  f = 7.0f;
+  CHECK(!calc::calibrationFactor(3.19f, 4.0f, &f));
+  CHECK(f == 7.0f);  // a refused figure leaves the caller's factor alone
+  CHECK(calc::calibrationFactor(4.5f, 3.6f, &f) && f == 1.25f);
+  f = 7.0f;
+  CHECK(!calc::calibrationFactor(4.5f, 3.59f, &f));
+  CHECK(f == 7.0f);
+  // a reading under 2.5 V is a floating pin, not a cell, even when it would give a factor in range
+  CHECK(!calc::calibrationFactor(2.6f, 2.4f, &f));
+  CHECK(calc::calibrationFactor(2.6f, 2.5f, &f));  // (and 2.5 V itself is a reading)
+  f = 7.0f;
+  // a figure that cannot be one LiPo cell, or a pin that reads nothing, is refused and leaves the factor alone
+  f = 7.0f;
+  const float bad[] = {0.0f, 2.4f, 4.6f, -4.2f, NAN, INFINITY};
+  for (float t : bad) CHECK(!calc::calibrationFactor(t, 4.1f, &f));
+  const float badMeasured[] = {0.0f, 2.4f, 6.1f, -4.1f, NAN, INFINITY};
+  for (float m : badMeasured) CHECK(!calc::calibrationFactor(4.2f, m, &f));
+  CHECK(f == 7.0f);
+}
+
 static void testSensorMaths() {
   section("sensor maths");
   CHECK(calc::batteryPercent(4.25f) == 100);
@@ -1328,6 +1368,7 @@ int main() {
   testCalendar();
   testTimeZones();
   testSensorMaths();
+  testBatteryCalibration();
   testCharge();
   testFramePlan();
   testWeather();

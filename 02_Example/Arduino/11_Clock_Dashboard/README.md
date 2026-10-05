@@ -41,7 +41,7 @@ time zone (including daylight saving) by itself, and shows everything on the ref
    WiFi, HTTPClient, WebServer, ESPmDNS, Preferences, Wire and the SD card driver come with the ESP32 core.
 3. **WiFi and place:** either copy `secrets.example.h` to `secrets.h` and enter your WiFi name and password (2.4 GHz
    only; `secrets.h` is git-ignored; it can also hold `WIFI_SSID_BACKUP` / `WIFI_PASSWORD_BACKUP` for a second network,
-   and `LOCATION_LATITUDE` / `LOCATION_LONGITUDE` or `LOCATION_QUERY`),
+   `LOCATION_LATITUDE` / `LOCATION_LONGITUDE` or `LOCATION_QUERY`, and `BATTERY_CAPACITY_MAH` / `BATTERY_CALIBRATION`),
    **or** leave them out and put them in a settings file on an SD card after the first start, see
    [Settings from an SD card](#settings-from-an-sd-card). `secrets.h` is optional: without it the sketch compiles all the
    same and the clock starts with no network until the card says otherwise.
@@ -116,7 +116,8 @@ The file is forgiving about how it is typed:
 | `spotify`, `spotify_client_id` | Spotify on / off, and the Client ID of your own app (see [Spotify](#spotify)) |
 | `indoor_offset` | °C added to the indoor temperature, to make up for the board's own heat (`-4.0`) |
 | `battery` | `auto` or `none`. Say `none` when no battery is fitted: the gauge shows `USB` and nothing is estimated or shut down. The clock cannot tell by itself, see [Battery](#battery) (`auto`) |
-| `battery_capacity_mah` | The battery's capacity, so the *Power and settings* page can show the average current (`0` = unknown) |
+| `battery_capacity_mah` | The battery's capacity, so the *Power and settings* page can show the average current (`0` = unknown). The build's default is `BATTERY_CAPACITY_MAH` in `config.h` (put your own in `secrets.h`) |
+| `battery_calibration` | A multiplier for the measured battery voltage, the real voltage divided by the one shown: 4.20 V on a tester against 4.133 V shown gives `1.016`. `1` = none. See [Calibrating the voltage](#calibrating-the-voltage); default `BATTERY_CALIBRATION` in `config.h` |
 | `low_battery_shutdown`, `battery_cutoff_v` | Switch off before the cell is flat, and at what voltage, 3.10 to 3.60 (`on`, `3.30`) |
 | `cpu_mhz` | `80`, `160` or `240`; 80 is plenty for a clock (`80`) |
 | `weather_interval_min` | Minutes between weather updates, 5 to 240 (`15`) |
@@ -360,6 +361,28 @@ with a lithium discharge curve rather than a straight line. The gauge blinks bel
 once it has recovered to 23 so it cannot flicker around the threshold; it does not blink while the battery is being
 charged.
 
+### Calibrating the voltage
+
+The ADC and the divider can read a few percent low, and then a cell that is full (4.20 V on a LiPo tester) shows as
+about 4.13 V: the gauge stops at 93 %, and the clock, which calls a cell full from 4.16 V, never says so. A single
+multiplier, `battery_calibration`, fixes it, and everything else (the gauge, the estimate, the shutdown, the charge
+detection) then works with the corrected voltage. The *Power and settings* page shows the factor next to the voltage once
+it is not 1.
+
+1. Read the voltage the clock shows on the *Power and settings* page (*Battery 4.133 V*), and measure the same battery at the
+   same time with a tester or meter (4.20 V).
+2. The factor is the real voltage divided by the shown one: 4.20 / 4.133 = **1.016**. Give it to the clock in any of
+   three ways:
+   * the settings file on the SD card: `battery_calibration = 1.016`;
+   * the serial console: **`batcal 4.20`**. The clock measures for two seconds (the median of 25 readings, so WiFi bursts
+     do not skew it), works the factor out, saves it to flash and restarts; `batcal` alone shows the raw and the
+     corrected voltage, `batcal reset` goes back to no correction. Leave the clock alone while it measures;
+   * `BATTERY_CALIBRATION` in `secrets.h` (the build's default; the settings file and the console win over it).
+3. Allowed are factors from 0.80 to 1.25; `batcal` refuses a figure that is further off than that, as it means a wiring
+   problem or a typo, not the ADC. The best moment to calibrate is a cell the charger has finished with (4.20 V): the
+   voltage then holds still while you read both, and a multiplier's error is largest at the top. The result is only as
+   good as the tester you hold.
+
 <img src="docs/battery-states.png" alt="Battery gauge states" width="300">
 
 *The icon beside the gauge, top to bottom: charging (⚡), running on the battery (▼), full (✓), 17 % while charging (no
@@ -517,6 +540,7 @@ Things that were considered and **not** done, so nobody wonders:
 | The settings file is ignored | It has to be in the card's top folder and called `ESP32-S3-RLCD-Config.txt` (`ESP32-S31-RLCD-Config.txt` is accepted too, in case of a typo); the clock only looks at start-up |
 | No battery icon, or the wrong one | It takes about 13 minutes after a reboot and has limits, see [Battery](#battery); type `battery` in the serial console and look at the trend and step |
 | Gauge says full on USB with no battery | Say `battery = none` in the settings |
+| The gauge stops at 93 to 97 % when the cell is full (a tester says 4.20 V), or the icon never says *full* | The ADC reads a little low. Calibrate it: `batcal 4.20` in the serial console, or `battery_calibration` in the settings, see [Calibrating the voltage](#calibrating-the-voltage) |
 | *Battery empty* screen but the cell is charged | Hold KEY for 3 seconds on that screen to run anyway; check `battery_cutoff_v`; or `low_battery_shutdown = off` |
 | Seconds stutter now and then | See [Keeping the seconds on time](#keeping-the-seconds-on-time): the Info page's *Frames* and *Time* lines tell the firmware, the network and the panel apart |
 | Digits change a little early or late | Change `DISPLAY_LATENCY_MS` in `config.h` (default 20, the panel adds 0 to 39 ms on top) |
@@ -526,7 +550,8 @@ Things that were considered and **not** done, so nobody wonders:
 | Spotify says *redirect_uri: Insecure* | The Redirect URI in the Spotify dashboard is not exactly `http://127.0.0.1:8888/callback` (Spotify accepts plain http only for 127.0.0.1) |
 | *Spotify refused the code* when linking | Codes are single use: start again from the first step of the page |
 
-Serial console commands: `status`, `battery`, `config` (every setting, passwords hidden), `timing`, `refresh`, `page N`,
+Serial console commands: `status`, `battery`, `batcal V` (calibrate the battery voltage to what a tester shows, see
+[Calibrating the voltage](#calibrating-the-voltage)), `config` (every setting, passwords hidden), `timing`, `refresh`, `page N`,
 `invert`, `unlink`, `sleeptest` (draws the *Battery empty* screen and goes into the low-battery deep sleep without the
 battery being low: the way to try the shutdown on the bench; KEY or five minutes wake it), `reboot`.
 

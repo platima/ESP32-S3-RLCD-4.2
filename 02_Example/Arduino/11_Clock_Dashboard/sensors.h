@@ -16,7 +16,8 @@ struct IndoorReading {
 
 struct BatteryReading {
   bool present = false;
-  float volts = 0;
+  float volts = 0;     // corrected by the battery_calibration setting
+  float rawVolts = 0;  // as the ADC and the divider gave it, before that
   int percent = 0;
 };
 
@@ -26,7 +27,8 @@ bool sensorsBegin();
 // One blocking measurement (about 15 ms).  Returns false on a bus or CRC error.
 bool readIndoor(IndoorReading &out);
 
-// Average of several ADC samples, converted through the 1:3 divider.
+// Average of several ADC samples, converted through the 1:3 divider and multiplied by the
+// battery_calibration setting (everything else works with the corrected voltage).
 BatteryReading readBattery();
 
 // Hardware RTC, kept in UTC.  rtcReadUtc() is false when the clock has never

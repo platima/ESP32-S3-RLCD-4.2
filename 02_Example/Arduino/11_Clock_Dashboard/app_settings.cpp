@@ -82,9 +82,13 @@ Settings cfgBuildDefaults() {
   copyStr(d.timezone, sizeof d.timezone, TIMEZONE_POSIX_OVERRIDE);
   copyStr(d.spotifyClientId, sizeof d.spotifyClientId, SPOTIFY_CLIENT_ID);
   d.indoorOffsetC = INDOOR_TEMP_OFFSET_C;
+  d.batteryCapacityMah = BATTERY_CAPACITY_MAH;
+  d.batteryCalibration = BATTERY_CALIBRATION;
   d.weatherIntervalMin = WEATHER_INTERVAL_MIN;
   return d;
 }
+
+bool cfgSaveToFlash() { return saveToFlash(g_cfg, false); }
 
 void cfgLoadFlash() {
   g_cfg = cfgBuildDefaults();

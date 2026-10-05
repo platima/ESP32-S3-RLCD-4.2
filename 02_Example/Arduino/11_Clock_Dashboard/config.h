@@ -127,6 +127,23 @@
 #define BATTERY_LOW_CLEAR_PERCENT 23  // ... and keeps blinking until it climbs back to this
 #define BATTERY_INTERVAL_MS 5000UL
 
+// Capacity of your battery in mAh, so the Power and settings page can show the average current it
+// draws (0 = unknown; the runtime estimate does not need it).  Also a setting on the SD card
+// (battery_capacity_mah).  Put your own value in secrets.h.
+#ifndef BATTERY_CAPACITY_MAH
+#define BATTERY_CAPACITY_MAH 0
+#endif
+
+// Correction for the battery voltage the clock measures, as a multiplier (1 = none).  The ADC and the
+// 1:3 divider read a little low on many boards: a full cell (4.20 V on a LiPo tester) shows as
+// 4.13 V, so the gauge stops at 93 % and the clock never sees the cell as full.  The factor is
+// the real voltage divided by what the Power and settings page shows (4.20 / 4.13 = 1.017); the
+// serial command "batcal 4.20" works it out.  Also a setting on the SD card (battery_calibration).
+// Put your own value in secrets.h.
+#ifndef BATTERY_CALIBRATION
+#define BATTERY_CALIBRATION 1.0f
+#endif
+
 // The board has no software-readable charge signal, so charging / discharging / full
 // is inferred from how the battery voltage moves (charge.h): it needs about a minute
 // to notice the cable being plugged or pulled and about thirteen after a reboot.  For a

@@ -114,6 +114,12 @@
 # average current.  0 = unknown.
 # battery_capacity_mah = 0
 #
+# Corrects the battery voltage the clock measures: the real voltage (from a LiPo tester
+# or a meter) divided by what the Power and settings page shows.  1 = no correction.
+# Example: the page says 4.13 V while the tester says 4.20 V, so 4.20 / 4.13 = 1.017.
+# Or type  batcal 4.20  in the serial console: the clock works it out and keeps it.
+# battery_calibration = 1
+#
 # on or off.  Shut down (deep sleep, with a message on the screen) before the battery
 # is flat, so a LiPo is not ruined.  It wakes by itself once charging has brought the
 # battery back, or when you press a button.

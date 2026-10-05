@@ -129,6 +129,11 @@ const Def kDefs[] = {
     {"battery_capacity_mah", "batmah", T_INT, OFF(batteryCapacityMah), 0, 0, 20000, nullptr, false, "Sensors and battery",
      "Capacity of your battery in mAh, so the Power and settings page can show the\n"
      "average current.  0 = unknown."},
+    {"battery_calibration", "batcal", T_FLOAT, OFF(batteryCalibration), 0, 0.80, 1.25, nullptr, false, "Sensors and battery",
+     "Corrects the battery voltage the clock measures: the real voltage (from a LiPo tester\n"
+     "or a meter) divided by what the Power and settings page shows.  1 = no correction.\n"
+     "Example: the page says 4.13 V while the tester says 4.20 V, so 4.20 / 4.13 = 1.017.\n"
+     "Or type  batcal 4.20  in the serial console: the clock works it out and keeps it."},
     {"low_battery_shutdown", "shut", T_BOOL, OFF(lowBatteryShutdown), 0, 0, 0, nullptr, false, "Sensors and battery",
      "on or off.  Shut down (deep sleep, with a message on the screen) before the battery\n"
      "is flat, so a LiPo is not ruined.  It wakes by itself once charging has brought the\n"
@@ -136,10 +141,10 @@ const Def kDefs[] = {
     {"battery_cutoff_v", "cutoff", T_FLOAT, OFF(batteryCutoffV), 0, 3.10, 3.60, nullptr, false, "Sensors and battery",
      "Battery voltage, as measured while the clock runs, at which it shuts down:\n"
      "3.10 to 3.60 (default 3.30)."},
-    // 24
+    // 25
     {"cpu_mhz", "cpu", T_ENUM, OFF(cpuSpeed), 0, 0, 0, kCpuNames, false, "Power",
      "80, 160 or 240.  80 uses the least power and is plenty for a clock."},
-    // 25
+    // 26
     {"weather_interval_min", "wxint", T_INT, OFF(weatherIntervalMin), 0, 5, 240, nullptr, false, "Weather",
      "Minutes between weather updates, 5 to 240 (default 15)."},
 };
@@ -169,6 +174,10 @@ const Alias kAliases[] = {
     {"password2", "wifi_backup_password"},        {"pass2", "wifi_backup_password"},
     {"second_password", "wifi_backup_password"},  {"fallback_password", "wifi_backup_password"},
     {"alt_password", "wifi_backup_password"},     {"backup_key", "wifi_backup_password"},
+    {"battery_cal", "battery_calibration"},       {"adc_calibration", "battery_calibration"},
+    {"voltage_calibration", "battery_calibration"}, {"battery_scale", "battery_calibration"},
+    {"battery_gain", "battery_calibration"},      {"adc_scale", "battery_calibration"},
+    {"battery_capacity", "battery_capacity_mah"}, {"capacity_mah", "battery_capacity_mah"},
 };
 
 // ---------------------------------------------------------------------------

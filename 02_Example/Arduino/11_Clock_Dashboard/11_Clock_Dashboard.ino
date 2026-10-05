@@ -496,7 +496,12 @@ static void buildInfoPower(UiModel &m, const SharedState &s) {
   if (psramFound()) add("PSRAM", "ON: wastes power (Tools > PSRAM)");
 
   if (s_batHave) {
-    snprintf(v, sizeof v, "%.3f V = %.1f %% on the curve", s_batVolts, (double)calc::batteryPercentF(s_batVolts));
+    if (fabsf(g_cfg.batteryCalibration - 1.0f) > 0.0005f) {  // say so when the voltage has been corrected
+      snprintf(v, sizeof v, "%.3f V (x%.4f) = %.1f %% on the curve", s_batVolts, (double)g_cfg.batteryCalibration,
+               (double)calc::batteryPercentF(s_batVolts));
+    } else {
+      snprintf(v, sizeof v, "%.3f V = %.1f %% on the curve", s_batVolts, (double)calc::batteryPercentF(s_batVolts));
+    }
   } else {
     snprintf(v, sizeof v, "no battery in use");
   }
@@ -715,6 +720,81 @@ static void watchClock(const struct timeval &tv) {
 }
 
 // ---------------------------------------------------------------------------
+// Battery voltage calibration: "batcal 4.20" says what a LiPo tester or a meter shows right now
+// ---------------------------------------------------------------------------
+// The median of the raw battery voltage over about two seconds (WiFi transmit bursts pull single
+// readings down).  0 if there was no battery to read.
+static float measureRawBatteryVolts() {
+  float v[25];
+  int n = 0;
+  for (int i = 0; i < 25; i++) {
+    const BatteryReading b = readBattery();
+    if (b.present) v[n++] = b.rawVolts;
+    delay(80);
+  }
+  if (n < 10) return 0;
+  for (int i = 1; i < n; i++) {  // insertion sort: small n
+    const float x = v[i];
+    int j = i - 1;
+    while (j >= 0 && v[j] > x) {
+      v[j + 1] = v[j];
+      j--;
+    }
+    v[j + 1] = x;
+  }
+  return (n & 1) ? v[n / 2] : 0.5f * (v[n / 2 - 1] + v[n / 2]);
+}
+
+static void calibrateBattery(const char *arg) {
+  while (*arg == ' ') arg++;
+  if (!g_cfg.hasBattery()) {
+    Serial.println("battery = none in the settings: there is nothing to calibrate");
+    return;
+  }
+  if (!*arg) {
+    const BatteryReading b = readBattery();
+    Serial.printf("battery: measured %.3f V, corrected %.3f V (battery_calibration = %g)\n", b.rawVolts, b.volts,
+                  (double)g_cfg.batteryCalibration);
+    Serial.println("tell the clock what a tester or meter shows right now:  batcal 4.20   (undo it:  batcal reset)");
+    return;
+  }
+  char value[16];
+  if (!strcmp(arg, "reset")) {
+    value[0] = 0;  // an empty value forgets the setting: the default from config.h is back
+  } else {
+    const float truth = (float)atof(arg);
+    Serial.println("measuring for two seconds, leave the clock alone ...");
+    const float raw = measureRawBatteryVolts();
+    float factor = 1.0f;
+    if (raw <= 0) {
+      Serial.println("no battery reading: is a battery fitted?  nothing changed");
+      return;
+    }
+    if (!calc::calibrationFactor(truth, raw, &factor)) {
+      Serial.printf("the clock measures %.3f V and you say %.3f V: that is not one LiPo cell, or the two are more than "
+                    "20 %% apart (check the wiring and the figure); nothing changed\n",
+                    raw, truth);
+      return;
+    }
+    snprintf(value, sizeof value, "%.4f", (double)factor);
+    Serial.printf("the clock measures %.3f V, the tester says %.3f V: ", raw, truth);
+  }
+  applySetting(g_cfg, cfgBuildDefaults(), "battery_calibration", value);
+  const bool saved = cfgSaveToFlash();
+  Serial.printf("battery_calibration = %g%s\n", (double)g_cfg.batteryCalibration, saved ? ", saved to flash" : ", NOT saved to flash");
+  if (saved) {
+    Serial.println("restarting to start from a clean state ...");
+    delay(300);
+    fwConfirmNow();
+    ESP.restart();
+  }
+  s_batHave = false;  // not saved: it holds until the next restart, so forget what was learnt at the old scale
+  s_lastBatMs = 0;
+  s_charge.reset();
+  s_est.reset();
+}
+
+// ---------------------------------------------------------------------------
 // Serial console (handy while developing): type "help"
 // ---------------------------------------------------------------------------
 static void serviceSerial() {
@@ -729,6 +809,8 @@ static void serviceSerial() {
       if (!strcmp(buf, "reboot")) {
         fwConfirmNow();  // a restart you asked for is no failure of a new firmware
         ESP.restart();
+      } else if (!strncmp(buf, "batcal", 6)) {
+        calibrateBattery(buf + 6);
       } else if (!strcmp(buf, "fw")) {
         fwPrint(Serial);
       } else if (!strcmp(buf, "rollback")) {  // go back to the firmware in the other app slot
@@ -788,7 +870,7 @@ static void serviceSerial() {
         Serial.printf("wifi=%d rssi=%d ip=%s synced=%d zone=%s status='%s' spotify=%d '%s'\n", s.wifiUp, s.rssi,
                       s.ip, s.ntpSynced, s.tzPosix, s.status, (int)s.spotify.status, s.spotify.message);
       } else {
-        Serial.println("commands: status | battery | config | timing | fw | rollback | fwforget | refresh | page N | invert | unlink | sleeptest | reboot");
+        Serial.println("commands: status | battery | batcal V | config | timing | fw | rollback | fwforget | refresh | page N | invert | unlink | sleeptest | reboot");
       }
     } else if (len < sizeof buf - 1) {
       buf[len++] = c;

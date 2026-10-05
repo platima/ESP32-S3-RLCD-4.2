@@ -30,6 +30,20 @@ inline const BatteryPoint *batteryCurve(int *count) {
   return kCurve;
 }
 
+// The ADC and the 1:3 divider can read a few percent low (a full cell shows as 4.13 V).  The correction is
+// one multiplier: what a tester says divided by what the clock measured.  False if either voltage cannot be
+// a single LiPo cell (a floating pin, a typo) or the factor falls outside the setting's range, which means
+// something is wrong with the wiring or the figure, not the ADC.
+const float kCalibrationMin = 0.80f, kCalibrationMax = 1.25f;
+inline bool calibrationFactor(float trueVolts, float measuredVolts, float *factor) {
+  // (the range of the factor bounds the measured voltage from above: 4.5 / 0.8 is under 5.7 V)
+  if (!(trueVolts >= 2.5f && trueVolts <= 4.5f) || !(measuredVolts >= 2.5f)) return false;
+  const float f = trueVolts / measuredVolts;
+  if (!(f >= kCalibrationMin && f <= kCalibrationMax)) return false;
+  *factor = f;
+  return true;
+}
+
 // The same, not rounded: the battery-life estimate needs the fractions.
 inline float batteryPercentF(float volts) {
   int n;
