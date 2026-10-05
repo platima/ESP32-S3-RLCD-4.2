@@ -594,11 +594,15 @@ bool formatSetting(const Settings &s, size_t i, char *out, size_t cap) {
   return i < kDefCount && formatValue(s, kDefs[i], out, cap);
 }
 
-bool applyStoredSetting(Settings &s, size_t i, const char *value) {
+bool applyStoredSetting(Settings &s, size_t i, const char *value, char *err, size_t errCap) {
+  if (err && errCap) err[0] = 0;
   if (i >= kDefCount || !value) return false;
-  if (!value[0] && kDefs[i].type != T_STRING) return false;  // an empty text setting is a real choice
+  if (!value[0] && kDefs[i].type != T_STRING) {  // an empty text setting is a real choice
+    if (err) snprintf(err, errCap, "empty");
+    return false;
+  }
   Settings trial = s;
-  if (!setFromText(trial, kDefs[i], value, nullptr, 0)) return false;
+  if (!setFromText(trial, kDefs[i], value, err, errCap)) return false;
   s = trial;
   s.userSet |= 1u << i;
   return true;

@@ -946,7 +946,8 @@ static void applyCpuSetting() {
   if (s_lcd) s_lcd->busAcquire();
 }
 
-// A short note about what the SD card did, if anything (a toast holds 39 characters).
+// A short note about what the SD card did, if anything, or about a built-in default that was refused
+// (a toast holds 39 characters).
 static void announceConfig() {
   char toast[40];
   switch (g_cfgStatus.sd) {
@@ -971,7 +972,12 @@ static void announceConfig() {
     case CfgStatus::SD_WRITE_FAILED: showToast("SD card: cannot write", TOAST_WARN, 6000); break;
     case CfgStatus::SD_READ_FAILED: showToast("SD card: cannot read file", TOAST_WARN, 6000); break;
     case CfgStatus::SD_UNREADABLE: showToast("SD card is not FAT32", TOAST_WARN, 6000); break;
-    default: break;
+    default:  // no card: still say so when something in config.h / secrets.h was refused (the Info page has the details)
+      if (cfgBuildProblems() > 0) {
+        snprintf(toast, sizeof toast, "%d built-in default%s not used", cfgBuildProblems(), cfgBuildProblems() == 1 ? "" : "s");
+        showToast(toast, TOAST_WARN, 8000);
+      }
+      break;
   }
 }
 

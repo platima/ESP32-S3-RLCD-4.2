@@ -93,9 +93,11 @@ bool settingIsUserSet(const Settings &s, size_t i);
 // Returns false if it does not fit.
 bool formatSetting(const Settings &s, size_t i, char *out, size_t cap);
 
-// Applies text previously produced by formatSetting() (flash load).  A value that no
-// longer validates (a newer firmware changed the rules) is ignored.  Marks it user-set.
-bool applyStoredSetting(Settings &s, size_t i, const char *value);
+// Applies text previously produced by formatSetting() (flash load), or the build's defaults: the
+// text is the value as it is, with none of the file's quoting and comment rules, but it has to pass
+// the same checks.  A value that does not (a newer firmware changed the rules) is ignored, and `err`
+// (if given) says why.  Marks it user-set.
+bool applyStoredSetting(Settings &s, size_t i, const char *value, char *err = nullptr, size_t errCap = 0);
 
 // ---------------------------------------------------------------------------
 // The settings file

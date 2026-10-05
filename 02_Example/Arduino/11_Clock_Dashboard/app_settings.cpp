@@ -3,6 +3,7 @@
 #include <Preferences.h>
 #include <math.h>
 
+#include "build_defaults.h"
 #include "config.h"
 #include "fw_update.h"
 #include "log.h"
@@ -19,7 +20,7 @@ const char *const kNamespace = "cfg";
 const size_t kMaxFileBytes = 32 * 1024;  // a settings file is a few KB; more than this is not one
 const size_t kExampleCap = 12 * 1024;
 
-bool isPlaceholderSsid(const char *s) { return !strcmp(s, "YourWiFiName") || !strcmp(s, "YourBackupWiFiName"); }
+BuildReport s_build;  // what was wrong with config.h / secrets.h, found when the defaults were first worked out
 
 // The measured clock drift, kept by the network task in the "clock" namespace, for the note in the
 // example file.  Returns "" if nothing was measured yet.
@@ -68,24 +69,20 @@ bool saveToFlash(const Settings &s, bool clearFirst) {
 }  // namespace
 
 Settings cfgBuildDefaults() {
-  Settings d;
-  copyStr(d.wifiSsid, sizeof d.wifiSsid, isPlaceholderSsid(WIFI_SSID) ? "" : WIFI_SSID);
-  copyStr(d.wifiPassword, sizeof d.wifiPassword, isPlaceholderSsid(WIFI_SSID) ? "" : WIFI_PASSWORD);
-  copyStr(d.wifiBackupSsid, sizeof d.wifiBackupSsid, isPlaceholderSsid(WIFI_SSID_BACKUP) ? "" : WIFI_SSID_BACKUP);
-  copyStr(d.wifiBackupPassword, sizeof d.wifiBackupPassword, isPlaceholderSsid(WIFI_SSID_BACKUP) ? "" : WIFI_PASSWORD_BACKUP);
-  copyStr(d.hostname, sizeof d.hostname, APP_HOSTNAME);
-  d.units = USE_FAHRENHEIT ? UNITS_IMPERIAL : UNITS_METRIC;
-  d.latitude = LOCATION_LATITUDE;
-  d.longitude = LOCATION_LONGITUDE;
-  copyStr(d.locationLabel, sizeof d.locationLabel, LOCATION_LABEL);
-  copyStr(d.location, sizeof d.location, LOCATION_QUERY);
-  copyStr(d.timezone, sizeof d.timezone, TIMEZONE_POSIX_OVERRIDE);
-  copyStr(d.spotifyClientId, sizeof d.spotifyClientId, SPOTIFY_CLIENT_ID);
-  d.indoorOffsetC = INDOOR_TEMP_OFFSET_C;
-  d.batteryCapacityMah = BATTERY_CAPACITY_MAH;
-  d.batteryCalibration = BATTERY_CALIBRATION;
-  d.weatherIntervalMin = WEATHER_INTERVAL_MIN;
+  // Worked out once (it is asked for again whenever a setting is forgotten), and the problems are
+  // logged once.
+  static const Settings d = [] {
+    const Settings s = buildDefaults(&s_build);
+    for (int i = 0; i < s_build.kept; i++) LOGF(TAG, "built-in default not used: %s", s_build.text[i]);
+    if (s_build.problems > s_build.kept) LOGF(TAG, "... and %d more", s_build.problems - s_build.kept);
+    return s;
+  }();
   return d;
+}
+
+int cfgBuildProblems() {
+  cfgBuildDefaults();
+  return s_build.problems;
 }
 
 bool cfgSaveToFlash() { return saveToFlash(g_cfg, false); }
@@ -189,14 +186,22 @@ void cfgSummary(char *out, size_t cap) {
   }
 }
 
-int cfgIssueCount() { return g_cfgStatus.sd == CfgStatus::SD_FILE_APPLIED ? g_cfgStatus.report.issueCount : 0; }
+// The built-in defaults that were not used come first, then the problems of the SD file.
+int cfgIssueCount() {
+  cfgBuildDefaults();
+  return s_build.kept + (g_cfgStatus.sd == CfgStatus::SD_FILE_APPLIED ? g_cfgStatus.report.issueCount : 0);
+}
 
 void cfgIssueText(int i, char *out, size_t cap) {
   if (i < 0 || i >= cfgIssueCount()) {
     if (cap) out[0] = 0;
     return;
   }
-  copyStr(out, cap, g_cfgStatus.report.issues[i].text);
+  if (i < s_build.kept) {
+    copyStr(out, cap, s_build.text[i]);
+  } else {
+    copyStr(out, cap, g_cfgStatus.report.issues[i - s_build.kept].text);
+  }
 }
 
 void cfgPrint(Print &out) {

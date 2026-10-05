@@ -40,11 +40,11 @@ time zone (including daylight saving) by itself, and shows everything on the ref
    Arduino `libraries` folder or install it from the Library Manager) and **ArduinoJson 7.x** (Library Manager).
    WiFi, HTTPClient, WebServer, ESPmDNS, Preferences, Wire and the SD card driver come with the ESP32 core.
 3. **WiFi and place:** either copy `secrets.example.h` to `secrets.h` and enter your WiFi name and password (2.4 GHz
-   only; `secrets.h` is git-ignored; it can also hold `WIFI_SSID_BACKUP` / `WIFI_PASSWORD_BACKUP` for a second network,
-   `LOCATION_LATITUDE` / `LOCATION_LONGITUDE` or `LOCATION_QUERY`, and `BATTERY_CAPACITY_MAH` / `BATTERY_CALIBRATION`),
-   **or** leave them out and put them in a settings file on an SD card after the first start, see
-   [Settings from an SD card](#settings-from-an-sd-card). `secrets.h` is optional: without it the sketch compiles all the
-   same and the clock starts with no network until the card says otherwise.
+   only; `secrets.h` is git-ignored; it can also hold a second network, your place, your battery and any other setting
+   the card can set, see [Building the settings in](#building-the-settings-in)), **or** leave them out and put them in
+   a settings file on an SD card after the first start, see [Settings from an SD card](#settings-from-an-sd-card).
+   `secrets.h` is optional: without it the sketch compiles all the same and the clock starts with no network until the
+   card says otherwise.
 4. Upload. Open the Serial Monitor at 115200 baud for a log (type `help`). From then on a new build can also go in
    through the SD card, see [Updating the firmware from the SD card](#updating-the-firmware-from-the-sd-card).
 
@@ -62,8 +62,9 @@ appears at power-up even before WiFi.
 
 ## Settings
 
-Every setting has a built-in default (`config.h`, and `secrets.h` for the private ones). The clock also keeps settings in
-its own flash, and reads a settings file from an SD card. Later wins:
+Every setting has a built-in default in `config.h`, and `secrets.h` can replace any of them (see
+[Building the settings in](#building-the-settings-in)). The clock also keeps settings in its own flash, and reads a
+settings file from an SD card. Later wins:
 
 > built-in default  <  saved in flash  <  the file on the SD card
 
@@ -97,33 +98,66 @@ The file is forgiving about how it is typed:
   forget that saved setting and go back to the built-in default; `reset_all = yes` forgets all of them first.
 * Something it does not understand is skipped and reported, never fatal. A wrong value leaves the old one in place.
 
-| Setting | What it does (default) |
-| --- | --- |
-| `wifi` | `on` / `off`. Off switches the radio off: no network time, weather or Spotify, and less power drawn (`on`) |
-| `wifi_ssid`, `wifi_password` | The network (2.4 GHz). Passwords are plain text in the file and in the clock's flash. An open network: `wifi_password = ""` |
-| `wifi_backup_ssid`, `wifi_backup_password` | A second network, used when the first cannot be joined (a phone's hotspot, another router); see [A backup network](#a-backup-network). Empty: no backup |
-| `hostname` | The clock's name on the network, for the Spotify setup page `http://rlcd-clock.local` (`rlcd-clock`) |
-| `ntp_server` | A time server to try first (empty: `pool.ntp.org`, `time.cloudflare.com`, `time.google.com`) |
-| `wifi_power_save` | `normal` / `max`: how long the radio sleeps between messages. `max` saves a little more but can delay every reply, the network time included, by up to a third of a second (`normal`) |
-| `units` | `metric` (°C, km/h) or `imperial` (°F, mph) (`metric`) |
-| `time_format` | `24h` or `12h` with AM / PM (`24h`) |
-| `date_format` | `iso` 2026-10-04, `dmy` 04/10/2026, `mdy` 10/04/2026, `dmy-dot` 04.10.2026, `d-mon-y` 4 Oct 2026, `mon-d-y` Oct 4, 2026 (`iso`) |
-| `show_week` | The ISO week number and the day of the year after the weekday (`on`) |
-| `latitude`, `longitude` | Exact coordinates; they win over `location` |
-| `location_label` | What the status bar shows (empty: the name that was found) |
-| `location` | A place to look up (Open-Meteo), such as `Perth` or `"Paris, France"` |
-| `timezone` | An IANA name (`Australia/Perth`, not case sensitive) or a POSIX rule (`AWST-8`); empty: follow the location. **With WiFi off nothing can look it up: set it here** |
-| `spotify`, `spotify_client_id` | Spotify on / off, and the Client ID of your own app (see [Spotify](#spotify)) |
-| `indoor_offset` | °C added to the indoor temperature, to make up for the board's own heat (`-4.0`) |
-| `battery` | `auto` or `none`. Say `none` when no battery is fitted: the gauge shows `USB` and nothing is estimated or shut down. The clock cannot tell by itself, see [Battery](#battery) (`auto`) |
-| `battery_capacity_mah` | The battery's capacity, so the *Power and settings* page can show the average current (`0` = unknown). The build's default is `BATTERY_CAPACITY_MAH` in `config.h` (put your own in `secrets.h`) |
-| `battery_calibration` | A multiplier for the measured battery voltage, the real voltage divided by the one shown: 4.20 V on a tester against 4.133 V shown gives `1.016`. `1` = none. See [Calibrating the voltage](#calibrating-the-voltage); default `BATTERY_CALIBRATION` in `config.h` |
-| `low_battery_shutdown`, `battery_cutoff_v` | Switch off before the cell is flat, and at what voltage, 3.10 to 3.60 (`on`, `3.30`) |
-| `cpu_mhz` | `80`, `160` or `240`; 80 is plenty for a clock (`80`) |
-| `weather_interval_min` | Minutes between weather updates, 5 to 240 (`15`) |
+The last column is the name the same setting has in `config.h` / `secrets.h`, see [Building the settings in](#building-the-settings-in).
+
+| Setting | What it does (default) | Built in as |
+| --- | --- | --- |
+| `wifi` | `on` / `off`. Off switches the radio off: no network time, weather or Spotify, and less power drawn (`on`) | `WIFI_ENABLED` |
+| `wifi_ssid`, `wifi_password` | The network (2.4 GHz). Passwords are plain text in the file and in the clock's flash. An open network: `wifi_password = ""` | `WIFI_SSID`, `WIFI_PASSWORD` |
+| `wifi_backup_ssid`, `wifi_backup_password` | A second network, used when the first cannot be joined (a phone's hotspot, another router); see [A backup network](#a-backup-network). Empty: no backup | `WIFI_SSID_BACKUP`, `WIFI_PASSWORD_BACKUP` |
+| `hostname` | The clock's name on the network, for the Spotify setup page `http://rlcd-clock.local` (`rlcd-clock`) | `APP_HOSTNAME` |
+| `ntp_server` | A time server to try first (empty: `pool.ntp.org`, `time.cloudflare.com`, `time.google.com`) | `NTP_SERVER` |
+| `wifi_power_save` | `normal` / `max`: how long the radio sleeps between messages. `max` saves a little more but can delay every reply, the network time included, by up to a third of a second (`normal`) | `WIFI_POWER_SAVE` |
+| `units` | `metric` (°C, km/h) or `imperial` (°F, mph) (`metric`) | `USE_FAHRENHEIT` (`1` = imperial) |
+| `time_format` | `24h` or `12h` with AM / PM (`24h`) | `TIME_FORMAT` |
+| `date_format` | `iso` 2026-10-04, `dmy` 04/10/2026, `mdy` 10/04/2026, `dmy-dot` 04.10.2026, `d-mon-y` 4 Oct 2026, `mon-d-y` Oct 4, 2026 (`iso`) | `DATE_FORMAT` |
+| `show_week` | The ISO week number and the day of the year after the weekday (`on`) | `SHOW_WEEK` |
+| `latitude`, `longitude` | Exact coordinates; they win over `location` | `LOCATION_LATITUDE`, `LOCATION_LONGITUDE` |
+| `location_label` | What the status bar shows (empty: the name that was found) | `LOCATION_LABEL` |
+| `location` | A place to look up (Open-Meteo), such as `Perth` or `"Paris, France"` | `LOCATION_QUERY` |
+| `timezone` | An IANA name (`Australia/Perth`, not case sensitive) or a POSIX rule (`AWST-8`); empty: follow the location. **With WiFi off nothing can look it up: set it here** | `TIMEZONE_POSIX_OVERRIDE` |
+| `spotify`, `spotify_client_id` | Spotify on / off, and the Client ID of your own app (see [Spotify](#spotify)) | `SPOTIFY_ENABLED`, `SPOTIFY_CLIENT_ID` |
+| `indoor_offset` | °C added to the indoor temperature, to make up for the board's own heat (`-4.0`) | `INDOOR_TEMP_OFFSET_C` |
+| `battery` | `auto` or `none`. Say `none` when no battery is fitted: the gauge shows `USB` and nothing is estimated or shut down. The clock cannot tell by itself, see [Battery](#battery) (`auto`) | `BATTERY_MODE` |
+| `battery_capacity_mah` | The battery's capacity, so the *Power and settings* page can show the average current (`0` = unknown) | `BATTERY_CAPACITY_MAH` |
+| `battery_calibration` | A multiplier for the measured battery voltage, the real voltage divided by the one shown: 4.20 V on a tester against 4.133 V shown gives `1.016`. `1` = none. See [Calibrating the voltage](#calibrating-the-voltage) | `BATTERY_CALIBRATION` |
+| `low_battery_shutdown`, `battery_cutoff_v` | Switch off before the cell is flat, and at what voltage, 3.10 to 3.60 (`on`, `3.30`) | `LOW_BATTERY_SHUTDOWN`, `BATTERY_CUTOFF_V` |
+| `cpu_mhz` | `80`, `160` or `240`; 80 is plenty for a clock (`80`) | `CPU_MHZ` |
+| `weather_interval_min` | Minutes between weather updates, 5 to 240 (`15`) | `WEATHER_INTERVAL_MIN` |
 
 (`reset_all`, described above, is not a setting but an instruction.) The accepted spellings of every value are in
 the example file the clock writes.
+
+### Building the settings in
+
+Everything the card can set can also be **pre-programmed into the firmware**, so a clock comes out of the box set up
+(the way you want the WiFi, the units, the date format, the power saving) with no card at all. Copy
+`secrets.example.h` to `secrets.h` (git-ignored, so the passwords stay out of the repository), and `#define` the ones you
+want, using the names in the last column of the table above. `config.h` has the factory value of each, with a note.
+
+```c
+#define WIFI_SSID "My Network"
+#define WIFI_PASSWORD "my password"
+#define WIFI_POWER_SAVE "max"        // text values are the words the card file uses
+#define TIME_FORMAT "12h"
+#define DATE_FORMAT "d-mon-y"
+#define SHOW_WEEK 0                  // yes / no values are 1 and 0
+#define CPU_MHZ 80
+#define BATTERY_CUTOFF_V 3.40f       // numbers are plain
+```
+
+* **Same rules as the card.** Text settings and choices are written as on the card (`"12h"`, `"max"`, `"d-mon-y"`; the
+  list of choices is in the example file and in `config.h`), yes / no settings as `1` or `0`, numbers as numbers, and
+  every value must pass the same checks, such as the 3.10 to 3.60 V of `BATTERY_CUTOFF_V`. A value that does not is
+  **left out, not half-used**: the clock keeps the factory value and says so, with a banner at start-up, on the *Info*
+  page and in the serial log (`built-in default not used: WIFI_POWER_SAVE: expected normal, max`).
+* **The build is the bottom layer**: what an SD card saved in the clock's flash earlier, and the card file, win over it.
+  Flashing a new build does not clear that flash. So after changing `secrets.h` a setting that was once on a card
+  keeps its old value; put `reset_all = yes` in the file on a card once (or `wifi_power_save =` with nothing after the
+  `=` for just that setting) and the build's value counts again.
+* Every setting in the table has a macro (a test in `tools/tests` fails if one is ever added without), so the two ways
+  of setting up a clock cannot drift apart. The Spotify Client ID, the WiFi passwords and your place are the ones you
+  would not want in a public repository: that is what `secrets.h` is for.
 
 ### A backup network
 
@@ -537,6 +571,8 @@ Things that were considered and **not** done, so nobody wonders:
 | *SD card is not FAT32* | The card is exFAT (cards over 32 GB usually are) or not formatted; format it as FAT32 |
 | *SD card: cannot write* | The card's write-protect switch is on, or it is damaged; the clock never formats a card |
 | *SD settings: ... problems* | The *Power and settings* page lists the first three, with their line numbers |
+| *N built-in defaults not used* | A value in `secrets.h` fails the settings' own checks (a misspelt choice, a number outside its limits). It is left out and the factory value used; the *Power and settings* page and the serial log name the macro and say what it wants, see [Building the settings in](#building-the-settings-in) |
+| A setting in `secrets.h` has no effect | The clock's flash holds a value for it from an earlier SD card, and that wins over the build. `reset_all = yes` on a card forgets them, or `name =` with nothing after the `=` forgets one |
 | *N changed, NOT saved to flash* | The settings from the card are in force for this run, but the clock's flash would not take all of them (full or failing), so they are gone at the next restart. Leave the card in, or type `config` in the serial console to see what is in force |
 | The settings file is ignored | It has to be in the card's top folder and called `ESP32-S3-RLCD-Config.txt` (`ESP32-S31-RLCD-Config.txt` is accepted too, in case of a typo); the clock only looks at start-up |
 | No battery icon, or the wrong one | It takes about 13 minutes after a reboot and has limits, see [Battery](#battery); type `battery` in the serial console and look at the trend and step |
@@ -574,6 +610,9 @@ Written and tested on a PC (and compiled), never run on the real board:
   minute and the rollback (what to do with a file is tested on a PC against the header of a real exported build; the flash
   writing and the bootloader are not);
 * the new screens on the real panel (the renders are exact, the panel is not: its contrast and refresh are not modelled);
+* a built-in default that is refused (a typo in `secrets.h`) on the screen: the banner at start-up and the rows on the
+  *Power and settings* page. Which values are refused and what the message says is tested on a PC; showing it uses the
+  same rows as the problems of an SD card file, which have not been seen on the panel either;
 * from earlier: the Spotify linking flow, the charging indicator, `PIN_CHARGE_STATUS`.
 
 ## Files
@@ -583,6 +622,7 @@ Written and tested on a PC (and compiled), never run on the real board:
 | `11_Clock_Dashboard.ino` | UI loop (core 1): start-up, frame timing, buttons, sensors, battery, building the frame and the info pages |
 | `ui.cpp`, `ui.h` | All drawing (U8g2 C API only, no Arduino code): the screens, the legend, the shutdown screen |
 | `settings.h`, `settings.cpp` | The settings: table, the tolerant file parser, the example file writer (pure logic, host-tested) |
+| `build_defaults.h` | The defaults of `config.h` / `secrets.h` as a `Settings`, through the same rules as the card (pure logic, host-tested: no setting can lack a build-time default) |
 | `app_settings.*`, `sdcard.*` | Settings in flash (`cfg` namespace) and on the SD card |
 | `net_task.cpp` | Core 0 task: WiFi, NTP, location, weather, time zone, drift measurement |
 | `spotify.cpp`, `spotify_parse.cpp` | Spotify: link page (OAuth with PKCE), tokens, polling, commands |
@@ -625,8 +665,12 @@ build the sketch.
   the 1.3 features (`test_features`): the settings file parser (what people type, bad values, reset, UTF-16, 3000 fuzzed
   files), the example file (it parses back to the same settings, hides passwords, and matches `docs/`), the moon against
   28 published phases, the date formats, the runtime estimate, the shutdown guard and the clock drift measurement on
-  simulated data. While they were written, the tests were checked by breaking the code in 50 ways and watching them
-  fail. Set
+  simulated data. A third program (`test_builddefaults`) is built four ways, with `override_*.h` standing in for a
+  `secrets.h`: nothing set (the factory build must equal the settings' own defaults), everything set (the result must
+  equal the SD file `all_settings.h`, setting by setting, so a setting without a build-time default is named), mistakes
+  (refused and reported) and values on the limits; it also checks that each macro is documented here and in
+  `secrets.example.h`. While they were written, the tests were checked by breaking the code in 50 ways and watching
+  them fail (and the build defaults in 70 more). Set
   `ARDUINOJSON_SRC` to ArduinoJson's `src` folder if it is not in `~/Arduino/libraries`.
 * **`tools/tests/battery_sim.cpp`** simulates whole battery discharges to choose the constants of `battery_est.h` (see
   the file header: `g++ -std=c++17 -O2 -I../.. battery_sim.cpp`).

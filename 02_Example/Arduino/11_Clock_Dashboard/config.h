@@ -9,13 +9,14 @@
 //
 //      this file and secrets.h   <   saved in flash   <   the SD card file
 //
-//  Credentials (WiFi, Spotify) and your own location can live in secrets.h, which git ignores;
-//  anything defined there replaces the default below.
+//  Every setting the card can set has a default here, so a build can come pre-programmed: define it
+//  in secrets.h (which git ignores, so it can hold credentials too) and it replaces the default below.
+//  The values are checked by the same rules as the card's, in the same words ("12h", "max").
+//  README: "Building the settings in".
 // ============================================================================
 
 #define APP_NAME "RLCD Clock"
 #define APP_VERSION "1.3"  // not semver: 1.0 was the first release, bumped by hand
-#define APP_HOSTNAME "rlcd-clock"  // network name; Spotify setup page: http://rlcd-clock.local
 
 // The settings file the clock looks for in the root of the SD card, and writes (with every
 // setting explained) when the card has none.  Upper or lower case, it is FAT.
@@ -35,7 +36,8 @@
 
 // secrets.h is optional: copy secrets.example.h to secrets.h to build your WiFi name and password in.
 // Without it the clock starts with no network and takes them from the SD card settings file.
-#if __has_include("secrets.h")
+// (The host tests define CONFIG_NO_SECRETS, so that a secrets.h lying around cannot get into them.)
+#if __has_include("secrets.h") && !defined(CONFIG_NO_SECRETS)
 #include "secrets.h"
 #endif
 
@@ -73,15 +75,51 @@
 #endif
 
 // ----------------------------------------------------------------------------
-// Units
+// Units and formats
 // ----------------------------------------------------------------------------
 #ifndef USE_FAHRENHEIT
 #define USE_FAHRENHEIT 0  // 0 = degC and km/h, 1 = degF and mph
 #endif
+#ifndef TIME_FORMAT
+#define TIME_FORMAT "24h"  // "24h" or "12h" (12h shows AM or PM)
+#endif
+// "iso" (2026-10-04), "dmy" (04/10/2026), "mdy" (10/04/2026), "dmy-dot" (04.10.2026),
+// "d-mon-y" (4 Oct 2026) or "mon-d-y" (Oct 4, 2026)
+#ifndef DATE_FORMAT
+#define DATE_FORMAT "iso"
+#endif
+#ifndef SHOW_WEEK
+#define SHOW_WEEK 1  // 1 = the ISO week number and the day of the year after the weekday
+#endif
 
 // ----------------------------------------------------------------------------
-// Time servers (used after the "ntp_server" setting, if there is one)
+// WiFi and network time
 // ----------------------------------------------------------------------------
+// 0 keeps the radio off: no network time, weather or Spotify, and less power drawn.  Without network
+// time the clock runs on its own crystal and drifts (README: "Running without WiFi").
+#ifndef WIFI_ENABLED
+#define WIFI_ENABLED 1
+#endif
+
+// "normal" or "max": how long the radio sleeps between messages.  Max draws a little less, but every
+// reply can come up to a third of a second late, the network time included.  The Spotify setup
+// page always runs in normal.
+#ifndef WIFI_POWER_SAVE
+#define WIFI_POWER_SAVE "normal"
+#endif
+
+// The clock's name on the network: letters, digits and '-'.  The Spotify setup page is http://<name>.local
+#ifndef APP_HOSTNAME
+#define APP_HOSTNAME "rlcd-clock"
+#endif
+
+// ----------------------------------------------------------------------------
+// Time servers
+// ----------------------------------------------------------------------------
+// NTP_SERVER is tried first, the three below follow ("" = just those three).  Also the "ntp_server" setting.
+#ifndef NTP_SERVER
+#define NTP_SERVER ""
+#endif
 #define NTP_SERVER_1 "pool.ntp.org"
 #define NTP_SERVER_2 "time.cloudflare.com"
 #define NTP_SERVER_3 "time.google.com"
@@ -127,6 +165,23 @@
 #define BATTERY_LOW_CLEAR_PERCENT 23  // ... and keeps blinking until it climbs back to this
 #define BATTERY_INTERVAL_MS 5000UL
 
+// "auto" or "none".  Say "none" when no battery is fitted (running from USB): the gauge then shows USB,
+// nothing is estimated and the clock never shuts down for a low battery.  The clock cannot tell by
+// itself: on USB the empty battery socket reads like a full battery.
+#ifndef BATTERY_MODE
+#define BATTERY_MODE "auto"
+#endif
+
+// 1 = shut down (deep sleep, with a message on the screen) before the battery is flat, so a LiPo is not
+// ruined.  The clock wakes by itself once charging has brought the battery back, or on a button press.
+// BATTERY_CUTOFF_V is the voltage, as measured while the clock runs, at which it shuts down (3.10 to 3.60).
+#ifndef LOW_BATTERY_SHUTDOWN
+#define LOW_BATTERY_SHUTDOWN 1
+#endif
+#ifndef BATTERY_CUTOFF_V
+#define BATTERY_CUTOFF_V 3.30f
+#endif
+
 // Capacity of your battery in mAh, so the Power and settings page can show the average current it
 // draws (0 = unknown; the runtime estimate does not need it).  Also a setting on the SD card
 // (battery_capacity_mah).  Put your own value in secrets.h.
@@ -154,14 +209,29 @@
 #define PIN_CHARGE_STATUS -1
 
 // ----------------------------------------------------------------------------
+// Power
+// ----------------------------------------------------------------------------
+// CPU clock in MHz: 80, 160 or 240.  80 uses the least power and is plenty for a clock.  (WiFi needs 80
+// at least.)  The PSRAM switch is a build option of the Arduino IDE and cannot be set here.
+#ifndef CPU_MHZ
+#define CPU_MHZ 80
+#endif
+
+// ----------------------------------------------------------------------------
 // Weather
 // ----------------------------------------------------------------------------
-#define WEATHER_INTERVAL_MIN 15  // Open-Meteo refreshes every 15 min; "weather_interval_min" on the SD card
+#ifndef WEATHER_INTERVAL_MIN
+#define WEATHER_INTERVAL_MIN 15  // minutes, 5 to 240; Open-Meteo refreshes every 15 min
+#endif
 #define WEATHER_RETRY_MS (60UL * 1000UL)
 
 // ----------------------------------------------------------------------------
 // Spotify (needs a Client ID: SPOTIFY_CLIENT_ID in secrets.h, or "spotify_client_id" on the SD card)
 // ----------------------------------------------------------------------------
+#ifndef SPOTIFY_ENABLED
+#define SPOTIFY_ENABLED 1  // 0 = off, even with a Client ID
+#endif
+
 // Spotify gives development-mode apps a small, unpublished request quota; people
 // polling every 3 s around the clock have been locked out for hours.  These
 // intervals stay well inside it.  The progress bar is extrapolated between polls

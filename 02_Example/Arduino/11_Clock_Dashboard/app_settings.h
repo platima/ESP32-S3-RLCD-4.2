@@ -33,8 +33,10 @@ struct CfgStatus {
 };
 extern CfgStatus g_cfgStatus;
 
-// The factory defaults: config.h and secrets.h.
+// The defaults this build ships with: config.h and secrets.h (see build_defaults.h).  A value in
+// there that the settings rules refuse is left out, and counted here.
 Settings cfgBuildDefaults();
+int cfgBuildProblems();
 
 // g_cfg = defaults, then flash.  Quick; call it first in setup().
 void cfgLoadFlash();
@@ -47,7 +49,8 @@ bool cfgSaveToFlash();
 // to flash.  Without one: writes an example file to the card.  Unmounts the card again.
 void cfgImportSdCard();
 
-// One line for the Info page / a toast, and the first few problems of the file.
+// One line for the Info page / a toast, and the first few problems: built-in defaults that were not
+// used, then those of the SD file.
 void cfgSummary(char *out, size_t cap);
 int cfgIssueCount();
 void cfgIssueText(int i, char *out, size_t cap);

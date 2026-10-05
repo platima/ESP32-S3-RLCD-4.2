@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "all_settings.h"
 #include "battery_est.h"
 #include "calc.h"
 #include "check.h"
@@ -78,35 +79,7 @@ std::string dump(const Settings &s) {
   return out;
 }
 
-// A file that sets every setting to something other than its default.
-const char *kAllSettings =
-    "wifi = off\n"
-    "wifi_ssid = Cafe Net\n"
-    "wifi_password = p@ss w0rd\n"
-    "wifi_backup_ssid = Phone Hotspot\n"
-    "wifi_backup_password = h0tsp0t pw\n"
-    "hostname = my-clock\n"
-    "ntp_server = time.nist.gov\n"
-    "wifi_power_save = max\n"
-    "units = imperial\n"
-    "time_format = 12h\n"
-    "date_format = mdy\n"
-    "show_week = off\n"
-    "latitude = 40.7128 N\n"
-    "longitude = 74.0060 W\n"
-    "location_label = New York\n"
-    "location = New York\n"
-    "timezone = America/New_York\n"
-    "spotify = off\n"
-    "spotify_client_id = 0123456789abcdef0123456789abcdef\n"
-    "indoor_offset = -2.5\n"
-    "battery = none\n"
-    "battery_capacity_mah = 2500\n"
-    "battery_calibration = 1.0157\n"
-    "low_battery_shutdown = off\n"
-    "battery_cutoff_v = 3.45\n"
-    "cpu_mhz = 160\n"
-    "weather_interval_min = 30\n";
+// (kAllSettings, a file that sets every setting to something other than its default, is in all_settings.h)
 
 void testSettingsTable() {
   section("settings table");
