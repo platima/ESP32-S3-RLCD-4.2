@@ -1,0 +1,7 @@
+# Local credentials - copy secrets.example.h to secrets.h
+secrets.h
+
+# Host-side UI preview tool: build products
+tools/ui_preview/build/
+tools/ui_preview/out/
+tools/tests/build/

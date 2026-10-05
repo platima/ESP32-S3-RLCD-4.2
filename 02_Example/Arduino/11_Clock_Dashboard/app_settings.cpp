@@ -1,0 +1,197 @@
+#include "app_settings.h"
+
+#include <Preferences.h>
+#include <math.h>
+
+#include "config.h"
+#include "fw_update.h"
+#include "log.h"
+#include "sdcard.h"
+#include "util.h"
+
+Settings g_cfg;
+CfgStatus g_cfgStatus;
+
+namespace {
+
+const char *const TAG = "cfg";
+const char *const kNamespace = "cfg";
+const size_t kMaxFileBytes = 32 * 1024;  // a settings file is a few KB; more than this is not one
+const size_t kExampleCap = 12 * 1024;
+
+bool isPlaceholderSsid(const char *s) { return !strcmp(s, "YourWiFiName") || !strcmp(s, "YourBackupWiFiName"); }
+
+// The measured clock drift, kept by the network task in the "clock" namespace, for the note in the
+// example file.  Returns "" if nothing was measured yet.
+void driftNote(char *out, size_t cap) {
+  out[0] = 0;
+  Preferences p;
+  if (!p.begin("clock", true)) return;
+  const float ppm = p.getFloat("dppm", NAN);
+  const float hours = p.getFloat("dhours", 0);
+  p.end();
+  if (isnan(ppm) || hours < 3) return;
+  snprintf(out, cap, "This clock measured itself while it had WiFi: %+.1f ppm, %+.2f s a day, over %.0f hours.\n"
+                     "Without WiFi it would keep that error (and slowly change with temperature).",
+           (double)ppm, (double)ppm * 0.0864, (double)hours);
+}
+
+bool saveToFlash(const Settings &s, bool clearFirst) {
+  Preferences p;
+  if (!p.begin(kNamespace, false)) return false;
+  if (clearFirst) p.clear();
+  char text[96];
+  for (size_t i = 0; i < settingCount(); i++) {
+    const char *key = settingNvsKey(i);
+    if (settingIsUserSet(s, i)) {
+      if (formatSetting(s, i, text, sizeof text)) p.putString(key, text);
+    } else if (p.isKey(key)) {
+      p.remove(key);
+    }
+  }
+  p.end();
+  return true;
+}
+
+}  // namespace
+
+Settings cfgBuildDefaults() {
+  Settings d;
+  copyStr(d.wifiSsid, sizeof d.wifiSsid, isPlaceholderSsid(WIFI_SSID) ? "" : WIFI_SSID);
+  copyStr(d.wifiPassword, sizeof d.wifiPassword, isPlaceholderSsid(WIFI_SSID) ? "" : WIFI_PASSWORD);
+  copyStr(d.wifiBackupSsid, sizeof d.wifiBackupSsid, isPlaceholderSsid(WIFI_SSID_BACKUP) ? "" : WIFI_SSID_BACKUP);
+  copyStr(d.wifiBackupPassword, sizeof d.wifiBackupPassword, isPlaceholderSsid(WIFI_SSID_BACKUP) ? "" : WIFI_PASSWORD_BACKUP);
+  copyStr(d.hostname, sizeof d.hostname, APP_HOSTNAME);
+  d.units = USE_FAHRENHEIT ? UNITS_IMPERIAL : UNITS_METRIC;
+  d.latitude = LOCATION_LATITUDE;
+  d.longitude = LOCATION_LONGITUDE;
+  copyStr(d.locationLabel, sizeof d.locationLabel, LOCATION_LABEL);
+  copyStr(d.location, sizeof d.location, LOCATION_QUERY);
+  copyStr(d.timezone, sizeof d.timezone, TIMEZONE_POSIX_OVERRIDE);
+  copyStr(d.spotifyClientId, sizeof d.spotifyClientId, SPOTIFY_CLIENT_ID);
+  d.indoorOffsetC = INDOOR_TEMP_OFFSET_C;
+  d.weatherIntervalMin = WEATHER_INTERVAL_MIN;
+  return d;
+}
+
+void cfgLoadFlash() {
+  g_cfg = cfgBuildDefaults();
+  g_cfgStatus = CfgStatus();
+  Preferences p;
+  if (!p.begin(kNamespace, true)) return;  // nothing has ever been saved
+  for (size_t i = 0; i < settingCount(); i++) {
+    const char *key = settingNvsKey(i);
+    if (!p.isKey(key)) continue;
+    const String value = p.getString(key, "");
+    if (applyStoredSetting(g_cfg, i, value.c_str())) g_cfgStatus.fromFlash++;
+  }
+  p.end();
+}
+
+void cfgImportSdCard() {
+  CfgStatus &st = g_cfgStatus;
+  const SdStatus mount = sdMount();
+  if (mount == SdStatus::NO_CARD) {
+    st.sd = CfgStatus::SD_NO_CARD;
+    return;
+  }
+  if (mount == SdStatus::UNREADABLE) {
+    st.sd = CfgStatus::SD_UNREADABLE;
+    LOGF(TAG, "SD card found, but it is not FAT32 (exFAT or unformatted?)");
+    return;
+  }
+  sdCardSummary(st.card, sizeof st.card);
+  fwScanCard();  // is there a firmware file on the card too?  (fwUpdateFromCard acts on it once the display is up)
+
+  const char *names[] = {CONFIG_FILE_NAME, CONFIG_FILE_NAME_ALT};
+  const char *found = nullptr;
+  for (const char *n : names) {
+    if (sdFileExists(n)) {
+      found = n;
+      break;
+    }
+  }
+
+  if (!found) {  // a card with no settings file: leave an example (every line commented out)
+    copyStr(st.file, sizeof st.file, CONFIG_FILE_NAME);
+    char *buf = (char *)malloc(kExampleCap);
+    char note[200];
+    driftNote(note, sizeof note);
+    const size_t n = buf ? renderExampleConfig(g_cfg, note, buf, kExampleCap, true) : 0;  // Windows line ends
+    const bool ok = n > 0 && sdWriteFile(CONFIG_FILE_NAME, buf, n);
+    free(buf);
+    st.sd = ok ? CfgStatus::SD_EXAMPLE_WRITTEN : CfgStatus::SD_WRITE_FAILED;
+    LOGF(TAG, "%s: %s on the %s card", CONFIG_FILE_NAME, ok ? "example file written" : "could not write the example file", st.card);
+    sdUnmount();
+    return;
+  }
+
+  copyStr(st.file, sizeof st.file, found);
+  char *data = nullptr;
+  size_t len = 0;
+  const bool read = sdReadFile(found, &data, &len, kMaxFileBytes);
+  sdUnmount();  // everything needed is in memory now
+  if (!read) {
+    st.sd = CfgStatus::SD_READ_FAILED;
+    LOGF(TAG, "could not read %s", found);
+    return;
+  }
+  st.report = applyConfigText(g_cfg, cfgBuildDefaults(), data, len);
+  free(data);
+  st.sd = CfgStatus::SD_FILE_APPLIED;
+  char sum[96];
+  formatConfigSummary(st.report, sum, sizeof sum);
+  LOGF(TAG, "%s: %s", found, sum);
+  for (int i = 0; i < st.report.issueCount; i++) LOGF(TAG, "  %s", st.report.issues[i].text);
+
+  if (st.report.touched() > 0) {  // keep what the card said, so the card can come out
+    st.savedToFlash = saveToFlash(g_cfg, st.report.resetAll);
+    LOGF(TAG, "settings %s flash", st.savedToFlash ? "saved to" : "could NOT be saved to");
+  }
+}
+
+void cfgSummary(char *out, size_t cap) {
+  const CfgStatus &st = g_cfgStatus;
+  char sum[96];
+  switch (st.sd) {
+    case CfgStatus::SD_NO_CARD:
+    case CfgStatus::SD_NOT_TRIED:
+      if (st.fromFlash > 0) {
+        snprintf(out, cap, "%d saved in flash, no SD card", st.fromFlash);
+      } else {
+        snprintf(out, cap, "built-in defaults, no SD card");
+      }
+      break;
+    case CfgStatus::SD_UNREADABLE: snprintf(out, cap, "SD card is not FAT32 (exFAT?)"); break;
+    case CfgStatus::SD_EXAMPLE_WRITTEN: snprintf(out, cap, "wrote an example file to the card"); break;
+    case CfgStatus::SD_WRITE_FAILED: snprintf(out, cap, "SD card: cannot write (locked?)"); break;
+    case CfgStatus::SD_READ_FAILED: snprintf(out, cap, "SD card: cannot read the file"); break;
+    case CfgStatus::SD_FILE_APPLIED:
+      formatConfigSummary(st.report, sum, sizeof sum);
+      snprintf(out, cap, "SD: %s", sum);  // (the info page holds 42 characters of this)
+      break;
+  }
+}
+
+int cfgIssueCount() { return g_cfgStatus.sd == CfgStatus::SD_FILE_APPLIED ? g_cfgStatus.report.issueCount : 0; }
+
+void cfgIssueText(int i, char *out, size_t cap) {
+  if (i < 0 || i >= cfgIssueCount()) {
+    if (cap) out[0] = 0;
+    return;
+  }
+  copyStr(out, cap, g_cfgStatus.report.issues[i].text);
+}
+
+void cfgPrint(Print &out) {
+  char v[100];
+  for (size_t i = 0; i < settingCount(); i++) {
+    if (settingIsSecret(i)) {
+      formatSetting(g_cfg, i, v, sizeof v);
+      snprintf(v, sizeof v, "%s", v[0] ? "(set)" : "(empty)");
+    } else if (!formatSetting(g_cfg, i, v, sizeof v)) {
+      snprintf(v, sizeof v, "?");
+    }
+    out.printf("  %-22s = %s%s\n", settingKey(i), v, settingIsUserSet(g_cfg, i) ? "" : "   (default)");
+  }
+}
