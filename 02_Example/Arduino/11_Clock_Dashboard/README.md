@@ -172,7 +172,9 @@ How it stays safe:
 * **A new firmware is on trial for its first minute.** If the clock resets in that minute (a crash, a hang the watchdog
   catches, or you pulling the plug) the bootloader puts the previous firmware back, and the Info page says so (*the last
   SD card update was rolled back*). After a minute without a reset the new one is kept. The Info page counts the trial
-  down; going to sleep on purpose and the `reboot` serial command count as passing it.
+  down; going to sleep on purpose and the `reboot` serial command count as passing it. If the bootloader refuses the
+  confirmation (a flash fault) the clock tries again a few times, and until it works the Info page says *NOT confirmed
+  yet*, as a reset would still undo the update.
 * **Needs two app slots.** The partition scheme from the Quick start has them; a single-app scheme gets the message *No
   second app slot*. The very first install of this feature has to come by USB, as the updater has to be in the firmware.
   A USB upload always works, whatever happened to the slots.
@@ -505,12 +507,13 @@ Things that were considered and **not** done, so nobody wonders:
 | The Info page says *(backup)* | The main network could not be joined (or was out of range). The clock looks for it every 10 minutes and goes back by itself, see [A backup network](#a-backup-network) |
 | *No WiFi name set (see README)* | `secrets.h` still has the placeholder name and there is no `wifi_ssid` in the settings |
 | *No NTP reply (UDP 123 blocked?)* | The router or network blocks NTP; the clock needs it (or a previously set RTC) before it will do HTTPS |
-| Weather missing, *Weather update failed* | Check the serial log; the clock retries every minute |
+| Weather missing, *Weather update failed* | Check the serial log; the clock retries every minute. A reply that lacks a field the clock shows as a fact (the temperature, humidity, wind, condition, day or night, or a day's conditions and temperatures) is refused rather than shown with a made-up default; the rain chance, sunrise, sunset and UV may be missing and then show 0 %, `--:--` and 0 |
 | *Set a location (SD card or secrets.h)* | No `latitude` / `longitude` or `location` anywhere. The clock still tells the time, and the status bar says *Earth* |
 | Wrong time zone | Check the coordinates, or set `timezone` |
 | *SD card is not FAT32* | The card is exFAT (cards over 32 GB usually are) or not formatted; format it as FAT32 |
 | *SD card: cannot write* | The card's write-protect switch is on, or it is damaged; the clock never formats a card |
 | *SD settings: ... problems* | The *Power and settings* page lists the first three, with their line numbers |
+| *N changed, NOT saved to flash* | The settings from the card are in force for this run, but the clock's flash would not take all of them (full or failing), so they are gone at the next restart. Leave the card in, or type `config` in the serial console to see what is in force |
 | The settings file is ignored | It has to be in the card's top folder and called `ESP32-S3-RLCD-Config.txt` (`ESP32-S31-RLCD-Config.txt` is accepted too, in case of a typo); the clock only looks at start-up |
 | No battery icon, or the wrong one | It takes about 13 minutes after a reboot and has limits, see [Battery](#battery); type `battery` in the serial console and look at the trend and step |
 | Gauge says full on USB with no battery | Say `battery = none` in the settings |

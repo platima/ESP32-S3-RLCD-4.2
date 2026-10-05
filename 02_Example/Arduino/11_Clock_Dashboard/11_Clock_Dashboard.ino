@@ -373,7 +373,11 @@ static void buildInfoSystem(UiModel &m, const SharedState &s, uint32_t nowMs, ti
   add("Firmware", v);
   uint32_t trialLeft;
   if (fwOnTrial(nowMs, &trialLeft)) {  // just installed from the SD card: a reset now puts the old one back
-    snprintf(v, sizeof v, "new firmware on trial, kept in %u s", (unsigned)trialLeft);
+    if (trialLeft > 0) {
+      snprintf(v, sizeof v, "new firmware on trial, kept in %u s", (unsigned)trialLeft);
+    } else {
+      snprintf(v, sizeof v, "new firmware NOT confirmed yet (see the log)");  // the bootloader refused it so far
+    }
     add("Update", v);
   } else if (fwRolledBack()) {
     add("Update", "the last SD card update was rolled back");
@@ -866,6 +870,11 @@ static void announceConfig() {
   switch (g_cfgStatus.sd) {
     case CfgStatus::SD_FILE_APPLIED: {
       const ConfigReport &r = g_cfgStatus.report;
+      if (r.touched() > 0 && !g_cfgStatus.savedToFlash) {  // in force now, gone after the next restart
+        snprintf(toast, sizeof toast, "%d changed, NOT saved to flash", r.touched());
+        showToast(toast, TOAST_WARN, 8000);
+        break;
+      }
       if (r.problems() > 0) {
         snprintf(toast, sizeof toast, "SD: %d changed, %d problem%s", r.touched(), r.problems(), r.problems() == 1 ? "" : "s");
       } else if (r.touched() > 0) {

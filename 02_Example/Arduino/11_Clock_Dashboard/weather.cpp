@@ -39,7 +39,12 @@ bool parseOpenMeteoForecast(const char *json, size_t len, WeatherData *out, Zone
   JsonObjectConst cur = doc["current"];
   JsonObjectConst daily = doc["daily"];
   if (cur.isNull() || daily.isNull()) return false;
-  if (cur["temperature_2m"].isNull()) return false;
+  // Everything the clock shows as a fact about now has to be in the reply.  A missing field would
+  // otherwise become a plausible default (a clear sky, 0 % humidity, no wind) that is simply wrong.
+  static const char *const kCurrent[] = {"temperature_2m",   "apparent_temperature", "relative_humidity_2m",
+                                         "weather_code",     "wind_speed_10m",       "is_day"};
+  for (const char *key : kCurrent)
+    if (cur[key].isNull()) return false;
 
   WeatherData w;
   w.valid = true;
@@ -58,10 +63,14 @@ bool parseOpenMeteoForecast(const char *json, size_t len, WeatherData *out, Zone
   JsonArrayConst rise = daily["sunrise"];
   JsonArrayConst set = daily["sunset"];
   JsonArrayConst uv = daily["uv_index_max"];
-  if (times.size() < 3 || tmax.size() < 3 || tmin.size() < 3) return false;
+  // The dates, conditions and temperatures of all three days are needed.  The rain chance, sunrise,
+  // sunset and UV are not: the service leaves them null where it has no figure (no probability model for
+  // a region, a polar day), and the clock then shows 0 %, "--:--" and 0.
+  if (times.size() < 3 || codes.size() < 3 || tmax.size() < 3 || tmin.size() < 3) return false;
 
   for (int i = 0; i < 3; i++) {
     WeatherDay &d = w.day[i];
+    if (codes[i].isNull() || tmax[i].isNull() || tmin[i].isNull()) return false;
     d.code = (uint8_t)(codes[i] | 0);
     d.tmax = tmax[i] | 0.0f;
     d.tmin = tmin[i] | 0.0f;
@@ -76,6 +85,10 @@ bool parseOpenMeteoForecast(const char *json, size_t len, WeatherData *out, Zone
   if (zone) {
     copyStr(zone->iana, sizeof zone->iana, doc["timezone"] | "");
     zone->utcOffsetSec = doc["utc_offset_seconds"] | 0;
+    // A zone name that is not in the clock's table is turned into a fixed offset, so a reply that names
+    // a zone but gives no offset must not count as one: it would mean UTC.  (No zone at all leaves the
+    // clock's zone alone.)
+    if (doc["utc_offset_seconds"].isNull()) zone->iana[0] = 0;
   }
   return true;
 }

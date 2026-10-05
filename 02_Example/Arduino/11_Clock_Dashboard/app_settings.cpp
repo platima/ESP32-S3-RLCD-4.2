@@ -36,21 +36,33 @@ void driftNote(char *out, size_t cap) {
            (double)ppm, (double)ppm * 0.0864, (double)hours);
 }
 
+// Writes the settings that came from flash or the card, and drops the ones that went back to their
+// defaults.  True only if every step worked: a full or failing flash must not look like success, as the
+// card then comes out and the settings are gone at the next restart.
 bool saveToFlash(const Settings &s, bool clearFirst) {
   Preferences p;
   if (!p.begin(kNamespace, false)) return false;
-  if (clearFirst) p.clear();
+  bool ok = true;
+  if (clearFirst && !p.clear()) ok = false;
   char text[96];
   for (size_t i = 0; i < settingCount(); i++) {
     const char *key = settingNvsKey(i);
     if (settingIsUserSet(s, i)) {
-      if (formatSetting(s, i, text, sizeof text)) p.putString(key, text);
-    } else if (p.isKey(key)) {
-      p.remove(key);
+      if (!formatSetting(s, i, text, sizeof text)) {  // too long to keep
+        ok = false;
+        continue;
+      }
+      // putString() returns the length it wrote, which is 0 for a failure and also for an empty string
+      // that went in fine: for that one, look at what is stored
+      const size_t n = p.putString(key, text);
+      const bool stored = n == strlen(text) && (n > 0 || (p.isKey(key) && p.getString(key, "x").length() == 0));
+      if (!stored) ok = false;
+    } else if (p.isKey(key) && !p.remove(key)) {
+      ok = false;
     }
   }
   p.end();
-  return true;
+  return ok;
 }
 
 }  // namespace

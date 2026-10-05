@@ -272,15 +272,28 @@ void fwUpdateFromCard(FwShowFn show) {
   ESP.restart();
 }
 
+// The image stays "on trial" until the bootloader has accepted the confirmation: if the call fails (flash
+// trouble) the next reset could still undo the update, so the flag, and the Info page, must say so.
 void fwConfirmNow() {
   if (!s_trial) return;
-  s_trial = false;
   const esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
-  LOGF(TAG, "firmware confirmed (%s)", err == ESP_OK ? "ok" : esp_err_to_name(err));
+  if (err == ESP_OK) {
+    s_trial = false;
+    LOGF(TAG, "firmware confirmed");
+  } else {
+    LOGF(TAG, "firmware could NOT be confirmed (%s): still on trial", esp_err_to_name(err));
+  }
 }
 
 void fwTrialTick(uint32_t nowMs) {
-  if (s_trial && nowMs >= FIRMWARE_TRIAL_MS) fwConfirmNow();
+  // a confirmation that failed is tried again every 5 s, five times in all; after that it is left alone
+  static uint8_t tries = 0;
+  static uint32_t lastTryMs = 0;
+  if (!s_trial || nowMs < FIRMWARE_TRIAL_MS || tries >= 5) return;
+  if (tries > 0 && nowMs - lastTryMs < 5000) return;
+  tries++;
+  lastTryMs = nowMs ? nowMs : 1;
+  fwConfirmNow();
 }
 
 bool fwOnTrial(uint32_t nowMs, uint32_t *secondsLeft) {

@@ -964,6 +964,76 @@ static void testWeather() {
   if (p != std::string::npos) two.replace(p, 12, "null");
   CHECK(!parseOpenMeteoForecast(two.c_str(), two.size(), &bad, &z));
 
+  // Everything shown as a fact is required: with one field missing (null, or not in the reply at all)
+  // the reply is refused rather than shown with a plausible default (a clear sky, 0 % humidity).
+  auto replaced = [&](const std::string &from, const std::string &to) {
+    std::string s = body;
+    const size_t at = s.find(from);
+    CHECK(at != std::string::npos);  // the text this test edits is in the fixture
+    if (at != std::string::npos) s.replace(at, from.size(), to);
+    return s;
+  };
+  auto parses = [&](const std::string &s, WeatherData *out = nullptr, ZoneInfo *zone = nullptr) {
+    WeatherData tmp;
+    ZoneInfo tmpZone;
+    return parseOpenMeteoForecast(s.c_str(), s.size(), out ? out : &tmp, zone ? zone : &tmpZone);
+  };
+  const char *currentFields[][2] = {{"temperature_2m", "20.2"}, {"apparent_temperature", "19.7"}, {"relative_humidity_2m", "57"},
+                                    {"weather_code", "2"},      {"wind_speed_10m", "12.3"},      {"is_day", "1"}};
+  for (const auto &f : currentFields) {
+    const std::string lit = std::string("\"") + f[0] + "\":" + f[1];
+    CHECK(parses(body));
+    CHECK(!parses(replaced(lit, std::string("\"") + f[0] + "\":null")));    // null
+    CHECK(!parses(replaced(lit, std::string("\"x_") + f[0] + "\":" + f[1])));  // not there
+  }
+  struct Column {
+    const char *key;
+    const char *v[3];
+  };
+  const Column columns[] = {{"weather_code", {"3", "3", "51"}},
+                            {"temperature_2m_max", {"20.3", "24.4", "19.9"}},
+                            {"temperature_2m_min", {"12.0", "11.6", "15.2"}}};
+  for (const Column &c : columns) {
+    const std::string lit = std::string("\"") + c.key + "\":[" + c.v[0] + "," + c.v[1] + "," + c.v[2] + "]";
+    for (int hole = 0; hole < 3; hole++) {  // any one of the three days missing
+      std::string v[3] = {c.v[0], c.v[1], c.v[2]};
+      v[hole] = "null";
+      CHECK(!parses(replaced(lit, std::string("\"") + c.key + "\":[" + v[0] + "," + v[1] + "," + v[2] + "]")));
+    }
+    CHECK(!parses(replaced(lit, std::string("\"x_") + c.key + "\":[" + c.v[0] + "," + c.v[1] + "," + c.v[2] + "]")));  // the column missing
+    CHECK(!parses(replaced(lit, std::string("\"") + c.key + "\":[" + c.v[0] + "," + c.v[1] + "]")));              // two days only
+  }
+  {  // what the service leaves null where it has no figure is optional: 0 %, "--:--" and 0
+    WeatherData o;
+    CHECK(parses(replaced("\"precipitation_probability_max\":[2,2,45]", "\"precipitation_probability_max\":[null,null,null]"), &o));
+    CHECK(o.day[0].rainPct == 0 && o.day[1].rainPct == 0 && o.day[2].rainPct == 0 && o.day[2].code == 51);
+    CHECK(parses(replaced("\"precipitation_probability_max\":[", "\"x_precipitation_probability_max\":["), &o));
+    CHECK(o.day[2].rainPct == 0);
+    CHECK(parses(replaced("\"sunrise\":[", "\"x_sunrise\":["), &o));
+    CHECK_STR(o.sunrise, "--:--");
+    CHECK_STR(o.sunset, "18:21");  // the other one is still read
+    CHECK(parses(replaced("\"sunset\":[", "\"x_sunset\":["), &o));
+    CHECK_STR(o.sunset, "--:--");
+    CHECK_STR(o.sunrise, "05:49");
+    CHECK(parses(replaced("\"uv_index_max\":[", "\"x_uv_index_max\":["), &o));
+    CHECK_NEAR(o.uvMax, 0.0, 1e-9);
+    CHECK_NEAR(o.temp, 20.2, 1e-4);  // and the rest of the reply is intact
+  }
+  {  // a zone name needs an offset to go with it (a name the clock does not know becomes a fixed offset)
+    WeatherData o;
+    ZoneInfo zi;
+    CHECK(parses(body, &o, &zi));
+    CHECK_STR(zi.iana, "Australia/Perth");
+    ZoneInfo noName;
+    CHECK(parses(replaced("\"timezone\":\"Australia/Perth\"", "\"x_timezone\":\"Australia/Perth\""), &o, &noName));
+    CHECK_STR(noName.iana, "");
+    ZoneInfo noOffset;
+    CHECK(parses(replaced("\"utc_offset_seconds\":28800", "\"x_utc_offset_seconds\":28800"), &o, &noOffset));
+    CHECK_STR(noOffset.iana, "");  // not "UTC": the clock leaves its zone alone
+    CHECK(o.valid);
+    CHECK(parseOpenMeteoForecast(body.c_str(), body.size(), &o, nullptr));  // no zone wanted
+  }
+
   // geocoder
   std::string geo = readFile("fixtures/open-meteo-geocode-perth.json");
   GeoResult g;
