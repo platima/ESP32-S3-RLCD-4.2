@@ -528,42 +528,49 @@ void drawWifi(u8g2_t *u, int x, int yb, bool up, int rssi) {
   }
 }
 
-// What the battery is doing, as pixel art ('#' = ink), drawn left of the gauge.
-const int kIconW = 9, kIconGap = 3;
-const char *const kIconBolt[] = {  // charging
-    ".....###.", "....###..", "...###...", "..###....", ".#######.", "....####.",
-    "...####..", "...###...", "..###....", "..##.....", ".##......", ".#.......",
+// What the battery is doing, as pixel art ('#' = ink) drawn inside the battery body: a bolt while
+// charging, a tick when it is full, nothing when it runs on the battery or the clock does not know
+// (the percentage and the fill say the rest).  The bolt sits in a window cleared in the fill, so it is
+// crisp at every level; the tick is cut out of the solid fill of a full battery.
+const char *const kArtBolt[] = {  // charging, 6 x 8
+    "....##", "...##.", "..##..", ".#####", "#####.", "..##..", ".##...", "##....",
 };
-const char *const kIconDown[] = {  // running on the battery
-    "...###...", "...###...", "...###...", "...###...", ".#######.", "..#####..", "...###...", "....#....",
-};
-const char *const kIconTick[] = {  // full
-    "........#", ".......##", "......##.", "##...##..", ".##.##...", "..###....", "...#.....",
+const char *const kArtTick[] = {  // full, 7 x 6
+    ".....##", "....##.", "#..##..", "##.##..", ".###...", "..#....",
 };
 
-// Picks the icon for a UiCharge value; returns its height in rows (0 = no icon).
+// Picks the art for a UiCharge value; returns its height in rows (0 = none).
 int chargeArt(int state, const char *const **rows) {
   switch (state) {
-    case CHARGE_CHARGING: *rows = kIconBolt; return (int)(sizeof kIconBolt / sizeof *kIconBolt);
-    case CHARGE_DISCHARGING: *rows = kIconDown; return (int)(sizeof kIconDown / sizeof *kIconDown);
-    case CHARGE_FULL: *rows = kIconTick; return (int)(sizeof kIconTick / sizeof *kIconTick);
+    case CHARGE_CHARGING: *rows = kArtBolt; return (int)(sizeof kArtBolt / sizeof *kArtBolt);
+    case CHARGE_FULL: *rows = kArtTick; return (int)(sizeof kArtTick / sizeof *kArtTick);
     default: *rows = nullptr; return 0;
   }
-}
-
-void drawArt(u8g2_t *u, int x, int y, const char *const *rows, int h) {
-  for (int r = 0; r < h; r++)
-    for (int c = 0; rows[r][c]; c++)
-      if (rows[r][c] == '#') u8g2_DrawPixel(u, x + c, y + r);
 }
 
 // Where the pieces of the battery gauge go.  The percentage sits in a cell as wide as "100%"
 // so the gauge does not shift when the number gains or loses a digit.
 struct BatteryLayout {
   char label[8];
-  int iconW, width;
+  int width;
 };
 const int kBatBodyW = 24, kBatBodyH = 12, kBatNub = 2, kBatGap = 4;
+
+// The art in the middle of the body at (bx, by).  `window`: first clear the art's columns, a pixel wider on
+// each side and as tall as the inside of the frame, in `bg`, then draw the art in `fg`.  Otherwise the art is
+// cut out of whatever is there, in `bg`.
+void drawBatteryArt(u8g2_t *u, int bx, int by, const char *const *rows, int h, int fg, int bg, bool window) {
+  const int w = (int)strlen(rows[0]);
+  const int ax = bx + 2 + (kBatBodyW - 4 - w) / 2, ay = by + 2 + (kBatBodyH - 4 - h) / 2;
+  if (window) {
+    u8g2_SetDrawColor(u, bg);
+    u8g2_DrawBox(u, ax - 1, by + 1, w + 2, kBatBodyH - 2);
+  }
+  u8g2_SetDrawColor(u, window ? fg : bg);
+  for (int r = 0; r < h; r++)
+    for (int c = 0; c < w; c++)
+      if (rows[r][c] == '#') u8g2_DrawPixel(u, ax + c, ay + r);
+}
 
 BatteryLayout batteryLayout(u8g2_t *u, const UiModel &m) {
   BatteryLayout b;
@@ -573,10 +580,8 @@ BatteryLayout batteryLayout(u8g2_t *u, const UiModel &m) {
     snprintf(b.label, sizeof b.label, "USB");
   }
   u8g2_SetFont(u, F_BOLD);
-  const char *const *rows;
-  b.iconW = (m.batPresent && chargeArt(m.batCharge, &rows) > 0) ? kIconW + kIconGap : 0;
   const int labelW = m.batPresent ? pitchWidth(u, "100%") : tw(u, b.label);
-  b.width = b.iconW + (m.batPresent ? kBatBodyW + kBatNub + kBatGap : 0) + labelW;
+  b.width = (m.batPresent ? kBatBodyW + kBatNub + kBatGap : 0) + labelW;
   return b;
 }
 
@@ -597,10 +602,7 @@ void drawBatteryAt(u8g2_t *u, int xr, int dy, const UiModel &m) {
   }
   int ty = 15 + dy;
   if (m.batPresent) {
-    const char *const *rows;
-    const int h = chargeArt(m.batCharge, &rows);
-    if (h > 0) drawArt(u, x0, 4 + dy + (kBatBodyH - h) / 2, rows, h);
-    const int bx = x0 + b.iconW, by = 4 + dy;
+    const int bx = x0, by = 4 + dy;
     u8g2_DrawFrame(u, bx, by, kBatBodyW, kBatBodyH);
     u8g2_DrawBox(u, bx + kBatBodyW, by + 3, kBatNub, kBatBodyH - 6);
     int inner = kBatBodyW - 4;
@@ -608,6 +610,10 @@ void drawBatteryAt(u8g2_t *u, int xr, int dy, const UiModel &m) {
     if (m.batPercent > 0 && fill < 1) fill = 1;
     if (fill > inner) fill = inner;
     u8g2_DrawBox(u, bx + 2, by + 2, fill, kBatBodyH - 4);
+    const char *const *rows;
+    const int h = chargeArt(m.batCharge, &rows);
+    if (h > 0) drawBatteryArt(u, bx, by, rows, h, flash ? 0 : 1, flash ? 1 : 0, m.batCharge == CHARGE_CHARGING);  // (the plate is black while it blinks)
+    if (flash) paper(u); else ink(u);
     txtPitch(u, bx + kBatBodyW + kBatNub + kBatGap, ty, b.label);
   } else {
     txt(u, x0, ty, b.label);

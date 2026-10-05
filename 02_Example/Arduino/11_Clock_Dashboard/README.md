@@ -13,7 +13,7 @@ time zone (including daylight saving) by itself, and shows everything on the ref
 | **Analog clock** | Hour, minute and second hands; the second hand ticks exactly on the second (or sweeps, see `CLOCK_SWEEP_FPS`) |
 | **Weather** | Now, today's high/low, and the next two days (Open-Meteo, no API key), each with the **chance of rain** (a drop) and the **moon** (how much of it is lit). Sunrise, sunset, UV and wind when nothing is playing |
 | **Indoor** | Temperature and humidity from the on-board SHTC3, corrected for board self-heating |
-| **Battery** | Gauge and percentage with a charging / discharging / full icon; **blinks below 20 %** (not while charging); an **estimate of the runtime left** on the Info page; a **gentle shutdown** before the cell is flat |
+| **Battery** | Gauge and percentage, with a bolt in it while charging and a tick when full; **blinks below 20 %** (not while charging); an **estimate of the runtime left** on the Info page; a **gentle shutdown** before the cell is flat |
 | **Spotify** | What is playing, progress, device and volume; the **KEY button** is the remote: 1 click play/pause, 2 clicks next, 3 clicks previous |
 | **Settings** | Units, time and date format, WiFi (and WiFi *off*), location, time zone, Spotify, battery and power options from a **file on an SD card**, read once at boot and kept in the clock's flash, so the card can come out again |
 | **Updates** | A new build can go in **from the SD card** (no cable, no WiFi needed): copy the exported `.ino.bin`, restart. It is checked first, installed into the second app slot, and kept only if it runs for a minute, else the old one returns |
@@ -385,12 +385,13 @@ it is not 1.
 
 <img src="docs/battery-states.png" alt="Battery gauge states" width="300">
 
-*The icon beside the gauge, top to bottom: charging (⚡), running on the battery (▼), full (✓), 17 % while charging (no
-blink), 17 % on the battery (blink phase).*
+*The gauge, top to bottom: charging (a bolt in a window in the fill), running on the battery (nothing added), full (a tick
+cut out of the solid fill), 17 % while charging (no blink), 17 % on the battery (blink phase). The gauge itself never
+moves when the state changes.*
 
 **No battery fitted?** The clock cannot tell. On USB the empty battery connector reads about 4.2 V, like a full cell, so
 a clock running from USB alone shows a full battery. Say `battery = none` in the settings and the gauge shows `USB`
-instead, with no charge icon, no estimate and no shutdown.
+instead, with no bolt or tick, no estimate and no shutdown.
 
 **How it knows what the battery is doing.** The board has no charge-status signal (the charger's STAT output only lights
 an LED), so `charge.h` works it out from how the battery voltage moves:

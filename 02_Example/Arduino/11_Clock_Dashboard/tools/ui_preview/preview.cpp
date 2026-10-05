@@ -306,27 +306,92 @@ static int checkBatteryGauge() {
     }
   }
 
+  // What the battery is doing is shown by a bolt (charging) or a tick (full) INSIDE the body: the pixels that
+  // differ from the same bar on the battery lie inside the frame, there are some, and the gauge itself never
+  // moves with the state or collides with the status message.
   const char *names[] = {"unknown", "discharging", "charging", "full"};
-  for (int st = CHARGE_UNKNOWN; st <= CHARGE_FULL; st++) {
-    m = baseModel();
-    m.spotify.status = SPOTIFY_IDLE;
-    m.batCharge = st;
-    setStr(m.status, sizeof m.status, "Weather: could not reach api.open-meteo.com, retrying in 60 s ...");
+  struct Look {
+    int pct;
+    bool low, blinkOn;
+  };
+  const Look looks[] = {{0, false, false}, {17, false, false}, {62, false, false}, {100, false, false}, {17, true, true}, {17, true, false}};
+  static bool plain[20][100];  // the right end of the status bar on the battery, without art
+  int gaugeFrames = 0, artFrames = 0;
+  auto render = [&](const Look &lk, int st) {
+    UiModel s = baseModel();
+    s.spotify.status = SPOTIFY_IDLE;
+    s.batPercent = lk.pct;
+    s.batLow = lk.low;
+    s.batBlinkOn = lk.blinkOn;
+    s.batCharge = st;
+    setStr(s.status, sizeof s.status, "Weather: could not reach api.open-meteo.com, retrying in 60 s ...");
     u8g2_ClearBuffer(g_u);
-    uiDraw(g_u, m);
+    uiDraw(g_u, s);
+    return s;
+  };
+  // pixels that differ from `plain`, inside and outside the body's frame
+  auto differences = [&](int bodyL, int *inside, int *outside) {
+    *inside = *outside = 0;
+    for (int y = 0; y < 20; y++)
+      for (int x = 300; x < 400; x++)
+        if (inkAt(x, y) != plain[y][x - 300]) {
+          const bool in = x > bodyL && x < bodyL + kBatBodyW - 1 && y > 4 && y < 4 + kBatBodyH - 1;
+          (in ? *inside : *outside)++;
+        }
+  };
+  for (const Look &lk : looks) {
+    const UiModel ref = render(lk, CHARGE_DISCHARGING);
+    for (int y = 0; y < 20; y++)
+      for (int x = 300; x < 400; x++) plain[y][x - 300] = inkAt(x, y);
     u8g2_SetFont(g_u, F_BOLD);
-    const int groupLeft = 396 - batteryLayout(g_u, m).width;
-    int icon = 0, intrusions = 0;
-    for (int x = groupLeft; x < groupLeft + kIconW; x++)
-      for (int y = 4; y <= 15; y++) icon += inkAt(x, y);
-    for (int x = groupLeft - 8; x < groupLeft; x++)
-      for (int y = 2; y <= 17; y++) intrusions += inkAt(x, y);
-    // with an icon its pixels start the group; without one the body's frame does (a full-height line)
-    const bool ok = st == CHARGE_UNKNOWN ? inkAt(groupLeft, 8) && !inkAt(groupLeft - 1, 8) : icon > 4;
-    if (!ok || intrusions) {
-      printf("  GAUGE PROBLEM (%s): %d pixels where the icon goes, %d pixels of message within 8 px of the gauge\n",
-             names[st], icon, intrusions);
+    const int bodyL = 396 - batteryLayout(g_u, ref).width;
+    for (int st = CHARGE_UNKNOWN; st <= CHARGE_FULL; st++) {
+      render(lk, st);
+      int inside, outside, intrusions = 0;
+      differences(bodyL, &inside, &outside);
+      const bool plate = lk.low && lk.blinkOn;  // the blink's black plate reaches 4 px left of the gauge
+      for (int x = bodyL - 8; x < bodyL - (plate ? 4 : 0); x++)
+        for (int y = 2; y <= 17; y++) intrusions += inkAt(x, y);
+      // the bolt sits in a window and shows at every level; the tick is cut out of the fill, so it needs a full
+      // one (a "full" gauge below 100 % may show less of it, or none)
+      const bool wantsArt = st == CHARGE_CHARGING || (st == CHARGE_FULL && lk.pct == 100);
+      const bool optionalArt = st == CHARGE_FULL && !wantsArt;
+      // the body's frame starts the group, in every state (white on the black plate while it blinks)
+      const bool stays = plate ? (!inkAt(bodyL, 8) && inkAt(bodyL - 1, 8)) : (inkAt(bodyL, 8) && !inkAt(bodyL - 1, 8));
+      gaugeFrames++;
+      artFrames += wantsArt;
+      if (!(wantsArt ? inside >= 8 : (optionalArt || inside == 0)) || outside || intrusions || !stays) {
+        printf("  GAUGE PROBLEM (%s, %d%%%s): %d art pixels inside the body, %d outside it, %d message pixels within 8 px, "
+               "frame %s\n",
+               names[st], lk.pct, lk.low ? (lk.blinkOn ? ", low, blink on" : ", low, blink off") : "", inside, outside, intrusions,
+               stays ? "in place" : "MOVED");
+        bad++;
+      }
+    }
+  }
+  printf("battery gauge states: %d frames (%d with a bolt or a tick), the gauge never moves, nothing leaves the body\n", gaugeFrames, artFrames);
+  {  // negative controls: art on the frame, and art that is not there, must both be seen
+    const Look lk = looks[2];
+    render(lk, CHARGE_DISCHARGING);
+    for (int y = 0; y < 20; y++)
+      for (int x = 300; x < 400; x++) plain[y][x - 300] = inkAt(x, y);
+    const UiModel s = render(lk, CHARGE_CHARGING);
+    u8g2_SetFont(g_u, F_BOLD);
+    const int bodyL = 396 - batteryLayout(g_u, s).width;
+    int inside, outside;
+    paper(g_u);
+    u8g2_DrawPixel(g_u, bodyL + 10, 4);  // a bolt that reached the top of the frame
+    ink(g_u);
+    differences(bodyL, &inside, &outside);
+    const bool trampled = outside > 0;
+    render(lk, CHARGE_DISCHARGING);  // art that is missing
+    differences(bodyL, &inside, &outside);
+    const bool missing = inside < 8;
+    if (!trampled || !missing) {
+      printf("  CHECK IS BLIND: art on the frame was %s, missing art was %s\n", trampled ? "seen" : "missed", missing ? "seen" : "missed");
       bad++;
+    } else {
+      printf("  negative control OK: a pixel off the body's frame and a gauge without its bolt are both seen\n");
     }
   }
   printf("battery gauge: %d problems\n", bad);
