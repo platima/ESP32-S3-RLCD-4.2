@@ -82,6 +82,7 @@ inline Settings buildDefaults(BuildReport *rep = nullptr) {
   put(d, rep, "APP_HOSTNAME", "hostname", APP_HOSTNAME);
   put(d, rep, "NTP_SERVER", "ntp_server", NTP_SERVER);
   put(d, rep, "WIFI_POWER_SAVE", "wifi_power_save", WIFI_POWER_SAVE);
+  put(d, rep, "WIFI_MODE", "wifi_mode", WIFI_MODE);
 
   // Units and formats
   put(d, rep, "USE_FAHRENHEIT", "units", USE_FAHRENHEIT ? "imperial" : "metric");
@@ -110,6 +111,7 @@ inline Settings buildDefaults(BuildReport *rep = nullptr) {
 
   // Power
   putInt(d, rep, "CPU_MHZ", "cpu_mhz", CPU_MHZ);
+  putInt(d, rep, "CPU_IDLE_MHZ", "cpu_idle_mhz", CPU_IDLE_MHZ);
 
   // Weather
   putInt(d, rep, "WEATHER_INTERVAL_MIN", "weather_interval_min", WEATHER_INTERVAL_MIN);

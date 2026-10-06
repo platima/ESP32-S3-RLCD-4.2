@@ -51,9 +51,11 @@
 // WiFi and power (optional)
 // #define WIFI_ENABLED 0                 // 0 = radio off: no network time, weather or Spotify, much less power
 // #define WIFI_POWER_SAVE "max"          // "normal" or "max": the radio sleeps longer (replies can come a third of a second late)
+// #define WIFI_MODE "sync"               // "always", or "sync": the radio is on only for the syncs, key presses and Spotify (README: Saving power)
 // #define APP_HOSTNAME "desk-clock"      // the clock's name on the network
 // #define NTP_SERVER "time.nist.gov"     // a time server to try first
 // #define CPU_MHZ 80                     // 80, 160 or 240
+// #define CPU_IDLE_MHZ 40                // the clock while the radio is off: 0 (= CPU_MHZ), 80, 40, 20 or 10 (untried: see config.h)
 // #define SPOTIFY_ENABLED 0              // 0 = off, even with a Client ID
 
 // Other (optional)

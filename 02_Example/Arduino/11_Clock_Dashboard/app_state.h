@@ -23,6 +23,13 @@ struct SharedState {
   time_t lastNtpSyncUtc = 0;
   char status[56] = "";      // transient progress / error text for the status bar
 
+  // --- the radio (wifi_mode = sync) -------------------------------------------
+  bool radioSync = false;           // sync mode is on
+  bool radioAsleep = false;         // ... and the radio is off at the moment
+  int32_t radioWakeInSec = -1;      // seconds until the next session by the clock, -1 = not known
+  uint16_t radioOnPermille = 0;     // the share of the time since start that the radio was on, in thousandths
+  uint32_t radioSessions = 0;
+
   // --- clock accuracy (drift.h) ----------------------------------------------
   bool driftKnown = false;   // a figure exists: measured now, or kept in flash from an earlier run
   bool driftLive = false;    // ... measured during this run

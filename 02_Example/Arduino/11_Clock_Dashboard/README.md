@@ -108,6 +108,7 @@ The last column is the name the same setting has in `config.h` / `secrets.h`, se
 | `hostname` | The clock's name on the network, for the Spotify setup page `http://rlcd-clock.local` (`rlcd-clock`) | `APP_HOSTNAME` |
 | `ntp_server` | A time server to try first (empty: `pool.ntp.org`, `time.cloudflare.com`, `time.google.com`) | `NTP_SERVER` |
 | `wifi_power_save` | `normal` / `max`: how long the radio sleeps between messages. `max` saves a little more but can delay every reply, the network time included, by up to a third of a second (`normal`) | `WIFI_POWER_SAVE` |
+| `wifi_mode` | `always` or `sync`. Sync switches the radio off between syncs, which draws far less on a battery; see [Saving power](#saving-power). **Not yet tried on the board** (`always`) | `WIFI_MODE` |
 | `units` | `metric` (°C, km/h) or `imperial` (°F, mph) (`metric`) | `USE_FAHRENHEIT` (`1` = imperial) |
 | `time_format` | `24h` or `12h` with AM / PM (`24h`) | `TIME_FORMAT` |
 | `date_format` | `iso` 2026-10-04, `dmy` 04/10/2026, `mdy` 10/04/2026, `dmy-dot` 04.10.2026, `d-mon-y` 4 Oct 2026, `mon-d-y` Oct 4, 2026 (`iso`) | `DATE_FORMAT` |
@@ -123,6 +124,7 @@ The last column is the name the same setting has in `config.h` / `secrets.h`, se
 | `battery_calibration` | A multiplier for the measured battery voltage, the real voltage divided by the one shown: 4.20 V on a tester against 4.133 V shown gives `1.016`. `1` = none. See [Calibrating the voltage](#calibrating-the-voltage) | `BATTERY_CALIBRATION` |
 | `low_battery_shutdown`, `battery_cutoff_v` | Switch off before the cell is flat, and at what voltage, 3.10 to 3.60 (`on`, `3.30`) | `LOW_BATTERY_SHUTDOWN`, `BATTERY_CUTOFF_V` |
 | `cpu_mhz` | `80`, `160` or `240`; 80 is plenty for a clock (`80`) | `CPU_MHZ` |
+| `cpu_idle_mhz` | `off`, `80`, `40`, `20` or `10`: the CPU clock while the radio is off (`wifi = off`, or between the syncs of `wifi_mode = sync`); see [Saving power](#saving-power). **Not yet tried on the board** (`off`) | `CPU_IDLE_MHZ` |
 | `weather_interval_min` | Minutes between weather updates, 5 to 240 (`15`) | `WEATHER_INTERVAL_MIN` |
 
 (`reset_all`, described above, is not a setting but an instruction.) The accepted spellings of every value are in
@@ -561,9 +563,71 @@ Things that were considered and **not** done, so nobody wonders:
   corrected from the RTC every second; that could not be tested here and a wrong clock is worse than a short battery life.
   A route that looks workable: the RTC's interrupt pin is wired to GPIO15, and its 1 Hz countdown timer could wake the chip
   every second from an accurate crystal.
-* **Connecting only when something is due** (weather every 15 minutes, NTP hourly) instead of staying associated.
 * **Powering down the audio chips** (ES8311 / ES7210 and the amplifier). They are left in their reset state, which is
   low power, and the amplifier's enable pin is held low in deep sleep.
+
+## Saving power
+
+Two settings go further than `wifi_power_save`: **`wifi_mode = sync`** keeps the radio off between syncs, and
+**`cpu_idle_mhz`** slows the processor while the radio is off. Both are **off by default**, and **neither has been tried on
+the board yet**: what follows is what the code does and what a PC simulation of its rules says, not a measurement. If you
+have a USB power meter, the figures this section lacks are exactly the ones worth sending back.
+
+### WiFi sync mode
+
+`wifi_mode = sync` (or `#define WIFI_MODE "sync"` in `secrets.h`) switches the radio off between *sessions*. A session
+starts when something needs the network, lasts while there is something to do, and ends 2.5 seconds after the last thing:
+
+| What starts or holds a session | When |
+| --- | --- |
+| the weather | every `weather_interval_min` (15 minutes) |
+| the network time | about every hour: in a session that is going on anyway when it is within 10 minutes of due, on its own when it is 5 minutes late. Drift measurement works as before |
+| a look at Spotify (if linked) | once in every session |
+| music playing | the radio stays on, and the Spotify strip on the dashboard is live, as in always mode; after a pause it stays on 5 minutes more |
+| a key press | the radio comes on and stays on for 45 seconds: the toast shows at once, and the action follows as soon as the radio is up (about 3 to 8 seconds on a quiet radio) |
+| the *Now Playing* page | on while it is on screen, and for a minute after: this is also how to get to the Spotify linking page (open the page with BOOT and wait for the address to appear) |
+
+A session that cannot join a network (the router is off, you are away) gives up after 25 seconds (45 with a backup
+network) and tries again after 1, 2, 5, 10 and then every 15 minutes, so an empty house does not scan all day. A key press
+does not wait for that. The backup network is tried first when it was the one that worked last time.
+
+**What a PC simulation of those rules gives** (`tools/tests/test_radio.cpp`: one day with a good network, sessions of
+about 8 seconds): **96 sessions, the radio on 0.6 % of the time** (0.9 % with Spotify linked); three hours without the
+router: 15 failed sessions and the radio on 3.5 % of the time; the router up but no internet: 2.9 %. The *Power and
+settings* page shows the real figure (`sync: on 0.8 %, 96 sessions, next in 9 min`) and the *System info* page says
+`asleep (sync mode), next in 9 min` while the radio is off. What is not known is the current: how much a session costs
+(association, the TLS handshakes) and what the board draws with the radio off.
+
+Things to expect in this mode: the status bar says *Connecting to WiFi...* for a few seconds every quarter of an hour; the
+dashboard's Spotify strip shows the weather extras unless music is playing (or was paused in the last 5 minutes); the first KEY press
+after a quiet time answers a few seconds late; and the radio stack is started and stopped hundreds of times a day, so watch the
+*Uptime* line (it shows the free memory) for the first days.
+
+### The idle clock
+
+`cpu_idle_mhz = 40` (or `20`, `10`; `80` when `cpu_mhz` is higher; `off` for no change; `#define CPU_IDLE_MHZ 40`) lowers
+the processor's clock **whenever the radio is off**: with `wifi = off`, or between the sessions of `wifi_mode = sync`. The
+clock goes back to `cpu_mhz` **before** the radio is switched on (WiFi works from 80 MHz up) and drops **after** it is off.
+It also goes back for 8 seconds after a button press (a frame takes four times as long to draw at 20 MHz as at 80, and
+whoever pressed wants the answer quickly), and **for as long as a computer is on the USB port**: below 80 MHz the
+clock of some peripherals follows the CPU and the USB console may stop, which would look like a crash while you are reading
+the log. So to see the idle clock at work, take the clock off the computer (a charger or a power bank is fine, they send no
+data), and type `power` in the console while it is attached to see what the clock thinks.
+
+| `cpu_idle_mhz` | Drawing a frame | |
+| --- | --- | --- |
+| 80 (only below a higher `cpu_mhz`) | about 30 ms | the radio can run |
+| 40 | about 60 ms | a good first try |
+| 20 | about 120 ms | |
+| 10 | about 240 ms | buttons feel late (a frame is drawn between two button polls) |
+
+The frame planner is told about every clock change and plans the first frame at the new clock with the right costs; in
+the simulation (`test_radio.cpp`) no frame is late at either switch. Things that are not known until someone tries it:
+the display's SPI clock and the battery ADC were written with 80 MHz in mind (the Arduino core's own
+`getApbFrequency()` is known to say 80 MHz at lower clocks on the ESP32-S3, [arduino-esp32 #7086](https://github.com/espressif/arduino-esp32/issues/7086)),
+so check that the screen looks right at the idle clock and that the *Battery* voltage on the *Power and settings* page does
+not change by more than a few millivolts when you press a button (which brings the clock up). The console command
+`power` prints the clock, why it is there, how many times it changed and the radio's share of the time.
 
 ## Troubleshooting
 
@@ -591,6 +655,9 @@ Things that were considered and **not** done, so nobody wonders:
 | Gauge says full on USB with no battery | Say `battery = none` in the settings |
 | The gauge stops at 93 to 97 % when the cell is full (a tester says 4.20 V), or the icon never says *full* | The ADC reads a little low. Calibrate it: `batcal 4.20` in the serial console, or `battery_calibration` in the settings, see [Calibrating the voltage](#calibrating-the-voltage) |
 | *Battery empty* screen but the cell is charged | Hold KEY for 3 seconds on that screen to run anyway; check `battery_cutoff_v`; or `low_battery_shutdown = off` |
+| *asleep (sync mode)* and no Spotify | Expected with `wifi_mode = sync`: press KEY once, or open the *Now Playing* page, and the radio comes on, see [Saving power](#saving-power) |
+| The serial console stops a minute after start with `cpu_idle_mhz` set | The clock was slowed below 80 MHz with a computer attached: the clock stays fast while the USB port shows a computer (`power` in the console says so), but a build with *USB Mode: USB-OTG (TinyUSB)* cannot tell. Set `cpu_idle_mhz = off` while debugging |
+| The screen is wrong or the buttons feel late with `cpu_idle_mhz` | Try a higher idle clock (40 or 80) or `off`, and tell someone: see [The idle clock](#the-idle-clock) |
 | Seconds stutter now and then | See [Keeping the seconds on time](#keeping-the-seconds-on-time): the Info page's *Frames* and *Time* lines tell the firmware, the network and the panel apart |
 | Digits change a little early or late | Change `DISPLAY_LATENCY_MS` in `config.h` (default 20, the panel adds 0 to 39 ms on top) |
 | *App owner needs Premium* | Spotify's rule for development-mode apps; see [Spotify](#spotify) |
@@ -625,6 +692,10 @@ Written and tested on a PC (and compiled), never run on the real board:
 * a built-in default that is refused (a typo in `secrets.h`) on the screen: the banner at start-up and the rows on the
   *Power and settings* page. Which values are refused and what the message says is tested on a PC; showing it uses the
   same rows as the problems of an SD card file, which have not been seen on the panel either;
+* `wifi_mode = sync` and `cpu_idle_mhz` (see [Saving power](#saving-power)): the whole of it. The scheduling is tested
+  against a simulated day and the clock policy against simulated frames; the radio being stopped and started again, the CPU
+  clock changing below 80 MHz (what the display's SPI, the battery ADC and the I2C bus do), the USB check, the Spotify strip
+  and the Now Playing page waking the radio, and the current actually saved are not;
 * from earlier: the Spotify linking flow, the charging indicator, `PIN_CHARGE_STATUS`.
 
 ## Files

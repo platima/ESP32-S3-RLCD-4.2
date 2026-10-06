@@ -74,6 +74,14 @@ class Picker {
     lastTried_ = NET_NONE;
   }
 
+  // The radio was switched off on purpose (wifi_mode = sync): the network joined is still the network to
+  // go back to, so the next attempt starts with it, not with the main one when the clock is on the backup
+  // (that would cost a failed attempt of 20 seconds at every session).  The backup's looks for the main
+  // network go on by the clock.
+  void radioOff() {
+    lastTried_ = current_ == NET_BACKUP ? NET_MAIN : NET_NONE;
+  }
+
   Net current() const { return current_; }
   bool onBackup() const { return current_ == NET_BACKUP; }
 

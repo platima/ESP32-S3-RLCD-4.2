@@ -19,3 +19,10 @@ bool netTakeRtcWriteRequest();
 
 // Fetch the weather again as soon as possible.
 void netRequestWeatherRefresh();
+
+// wifi_mode = sync: a key press (or any other wish for an answer from the network) switches the radio on and
+// holds it for 45 seconds.  Does nothing in always mode.  Any task may call it.
+void netWake();
+
+// True while the radio is on or about to be: the CPU clock must not go below 80 MHz then (clock_policy.h).
+bool netRadioNeedsFastClock();

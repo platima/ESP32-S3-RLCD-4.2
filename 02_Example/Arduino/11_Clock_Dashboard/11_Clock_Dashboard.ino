@@ -31,6 +31,7 @@
 #include "buttons.h"
 #include "calc.h"
 #include "charge.h"
+#include "clock_policy.h"
 #include "config.h"
 #include "frame_plan.h"
 #include "fw_update.h"
@@ -66,6 +67,12 @@ static bool s_flipPolarity = false;  // user toggled the screen polarity (XOR wi
 // planner (frame_plan.h) decides when.
 static FramePlanner s_planner(DISPLAY_LATENCY_MS * 1000);
 static uint32_t s_lastFrameMs = 0;
+
+// The CPU clock (clock_policy.h): fast while the radio, a computer on the USB port or a button needs it
+static uint32_t s_pokeUntilMs = 0;        // a button was pressed: stay fast until then
+static uint32_t s_clockSwitches = 0;      // how often the clock was changed (shown by the "power" console command)
+static const char *s_clockReason = "";    // why the clock is where it is, for the Power page
+static bool usbHostAttached();            // (defined with the clock code further down)
 
 // How well the frames kept time, shown on the Info page
 struct TimingStats {
@@ -118,6 +125,7 @@ static void applyPolarity() {
 static void handleKey(ClickEvent e) {
   if (e == CLICK_LONG) {  // refreshes the weather too, so it works without Spotify
     showToast("Refreshing...", TOAST_NONE, 1500);
+    netWake();
     spotifyPost(SPOTIFY_CMD_REFRESH);
     netRequestWeatherRefresh();
     return;
@@ -135,6 +143,7 @@ static void handleKey(ClickEvent e) {
     showToast("Link Spotify first", TOAST_WARN);
     return;
   }
+  netWake();  // wifi_mode = sync: the radio comes on for this (a few seconds before it is answered)
   switch (e) {
     case CLICK_1:
       if (st == SPOTIFY_PLAYING) {
@@ -184,6 +193,7 @@ static void handleBoot(ClickEvent e) {
 static void pollButtons(uint32_t nowMs) {
   ClickEvent k = s_key.update(digitalRead(PIN_KEY) == LOW, nowMs);
   ClickEvent b = s_boot.update(digitalRead(PIN_BOOT) == LOW, nowMs);
+  if (k != CLICK_NONE || b != CLICK_NONE) s_pokeUntilMs = (nowMs + clockpolicy::kPokeMs) | 1u;  // draw the answer at the working clock
   if (k != CLICK_NONE) handleKey(k);
   if (b != CLICK_NONE) handleBoot(b);
 }
@@ -312,6 +322,19 @@ static void formatAge(uint32_t sec, char *out, size_t cap) {
   }
 }
 
+// "45 s", "9 min", "1 h 5 min" for a time still to come; "" when it is not known (negative).
+static void formatIn(int32_t sec, char *out, size_t cap) {
+  if (sec < 0) {
+    if (cap) out[0] = 0;
+  } else if (sec < 90) {
+    snprintf(out, cap, "%d s", (int)sec);
+  } else if (sec < 5400) {
+    snprintf(out, cap, "%d min", (int)((sec + 30) / 60));
+  } else {
+    snprintf(out, cap, "%d h %d min", (int)(sec / 3600), (int)((sec / 60) % 60));
+  }
+}
+
 // The firmware's build date as 2026-10-04 (from the compiler's "Oct  4 2026").
 static void buildDateIso(char *out, size_t cap) {
   static const char *kMonths = "JanFebMarAprMayJunJulAugSepOctNovDec";
@@ -387,6 +410,10 @@ static void buildInfoSystem(UiModel &m, const SharedState &s, uint32_t nowMs, ti
     snprintf(v, sizeof v, "off (wifi = off in the settings)");
   } else if (s.wifiUp) {
     snprintf(v, sizeof v, "%s%s  %d dBm", s.ssid, s.wifiBackup ? " (backup)" : "", s.rssi);
+  } else if (s.radioSync && s.radioAsleep) {  // wifi_mode = sync, between two sessions
+    char in[16];
+    formatIn(s.radioWakeInSec, in, sizeof in);
+    snprintf(v, sizeof v, "asleep (sync mode)%s%s", s.radioWakeInSec >= 0 ? ", next in " : "", s.radioWakeInSec >= 0 ? in : "");
   } else {
     snprintf(v, sizeof v, "not connected");
   }
@@ -490,9 +517,25 @@ static void buildInfoPower(UiModel &m, const SharedState &s) {
   };
   char v[128];
 
-  snprintf(v, sizeof v, "%u MHz, WiFi %s", (unsigned)getCpuFrequencyMhz(),
-           !g_cfg.wifi ? "off" : (g_cfg.wifiPowerSave == WIFISAVE_MAX ? "saver max" : "saver normal"));
-  add("Power", v);
+  {  // the clock, and why it is where it is when there is an idle clock (a line holds 42 characters of value)
+    const char *wifi = !g_cfg.wifi ? "WiFi off" : (g_cfg.wifiPowerSave == WIFISAVE_MAX ? "WiFi saver max" : "WiFi saver normal");
+    if (g_cfg.cpuIdleMhz() > 0 && s_clockReason[0]) {
+      snprintf(v, sizeof v, "%u MHz (%s), %s", (unsigned)getCpuFrequencyMhz(), s_clockReason, wifi);
+    } else {
+      snprintf(v, sizeof v, "%u MHz, %s", (unsigned)getCpuFrequencyMhz(), wifi);
+    }
+    add("Power", v);
+  }
+  if (s.radioSync && g_cfg.wifi) {  // wifi_mode = sync: how much of the time the radio was on
+    char in[16];
+    formatIn(s.radioWakeInSec, in, sizeof in);
+    if (s.radioAsleep && s.radioWakeInSec >= 0) {
+      snprintf(v, sizeof v, "on %.1f %%, %u sessions, next in %s", s.radioOnPermille / 10.0, (unsigned)s.radioSessions, in);
+    } else {
+      snprintf(v, sizeof v, "on %.1f %% of the time, %u sessions", s.radioOnPermille / 10.0, (unsigned)s.radioSessions);
+    }
+    add("Radio", v);
+  }
   if (psramFound()) add("PSRAM", "ON: wastes power (Tools > PSRAM)");
 
   if (s_batHave) {
@@ -852,6 +895,18 @@ static void serviceSerial() {
                       (unsigned)s_timing.frames, (unsigned)s_timing.late, (int)(s_timing.worstLateUs / 1000),
                       (unsigned)s_planner.drawCostUs(), (unsigned)s_planner.sendCostUs(), (unsigned)s_timing.clockSteps,
                       (int)(s_timing.lastStepUs / 1000));
+      } else if (!strcmp(buf, "power")) {
+        SharedState s;
+        {
+          StateLock lock;
+          s = g_state;
+        }
+        Serial.printf("cpu %u MHz (working %d, idle %d: %s), %u clock changes; USB host %s, radio %s\n", (unsigned)getCpuFrequencyMhz(),
+                      g_cfg.cpuMhz(), g_cfg.cpuIdleMhz(), g_cfg.cpuIdleMhz() > 0 ? (s_clockReason[0] ? s_clockReason : "-") : "no idle clock",
+                      (unsigned)s_clockSwitches, usbHostAttached() ? "attached" : "no", netRadioNeedsFastClock() ? "needs the fast clock" : "off or idle");
+        Serial.printf("wifi_mode %s%s: radio on %.1f %% of the time since start, %u sessions, next in %d s; frames draw %u us, send %u us\n",
+                      g_cfg.syncMode() ? "sync" : "always", g_cfg.wifi ? "" : " (wifi off)", s.radioOnPermille / 10.0,
+                      (unsigned)s.radioSessions, (int)s.radioWakeInSec, (unsigned)s_planner.drawCostUs(), (unsigned)s_planner.sendCostUs());
       } else if (!strcmp(buf, "battery")) {
         char est[64];
         estimateText(est, sizeof est);
@@ -870,7 +925,7 @@ static void serviceSerial() {
         Serial.printf("wifi=%d rssi=%d ip=%s synced=%d zone=%s status='%s' spotify=%d '%s'\n", s.wifiUp, s.rssi,
                       s.ip, s.ntpSynced, s.tzPosix, s.status, (int)s.spotify.status, s.spotify.message);
       } else {
-        Serial.println("commands: status | battery | batcal V | config | timing | fw | rollback | fwforget | refresh | page N | invert | unlink | sleeptest | reboot");
+        Serial.println("commands: status | battery | batcal V | power | config | timing | fw | rollback | fwforget | refresh | page N | invert | unlink | sleeptest | reboot");
       }
     } else if (len < sizeof buf - 1) {
       buf[len++] = c;
@@ -938,12 +993,48 @@ static void lowBatteryGate() {
   powerDeepSleep(true);
 }
 
-// The CPU clock from the settings.  The display driver holds the SPI bus for good and the core
-// waits for every SPI bus when the clock changes, so the driver lets go for the moment.
-static void applyCpuSetting() {
+// The CPU clock.  The display driver holds the SPI bus for good and the core waits for every SPI bus when
+// the clock changes, so the driver lets go for the moment.  A frame takes longer to draw at a lower clock,
+// so the frame planner is told (the first frame after the switch is planned with the new costs).
+static void applyClock(int mhz) {
+  const int from = (int)getCpuFrequencyMhz();
+  if (from == mhz) return;
   if (s_lcd) s_lcd->busRelease();
-  powerSetCpuMhz(g_cfg.cpuMhz());
+  powerSetCpuMhz(mhz);
   if (s_lcd) s_lcd->busAcquire();
+  s_planner.clockChanged((uint32_t)from, (uint32_t)mhz);
+  s_clockSwitches++;
+}
+
+// The working clock from the settings (at start-up, and after the settings are read).
+static void applyCpuSetting() { applyClock(g_cfg.cpuMhz()); }
+
+// Is a computer on the USB port?  (Below 80 MHz the USB console may stop, which would look like a crash.)
+static bool usbHostAttached() {
+#if ARDUINO_USB_CDC_ON_BOOT && ARDUINO_USB_MODE
+  return HWCDC::isPlugged();
+#else
+  return false;
+#endif
+}
+
+// cpu_idle_mhz: the clock follows what needs it (clock_policy.h).  Called every time round the loop.
+static void serviceClock(uint32_t nowMs, int32_t usec) {
+  const int idle = g_cfg.cpuIdleMhz();
+  if (idle == 0) return;  // no idle clock: the working clock stays (start-up has set it)
+  static uint32_t s_usbCheckMs = 0;
+  static bool s_usb = false;
+  if (s_usbCheckMs == 0 || nowMs - s_usbCheckMs >= 500) {
+    s_usbCheckMs = nowMs ? nowMs : 1;
+    s_usb = usbHostAttached();
+  }
+  clockpolicy::Needs needs;
+  needs.radio = netRadioNeedsFastClock();
+  needs.usbHost = s_usb;
+  needs.poked = s_pokeUntilMs != 0 && (int32_t)(s_pokeUntilMs - nowMs) > 0;
+  const int want = clockpolicy::target(needs, g_cfg.cpuMhz(), idle);
+  s_clockReason = want == idle ? "idle" : (needs.radio ? "radio on" : (needs.usbHost ? "USB attached" : "button"));
+  if (clockpolicy::mayChange((int)getCpuFrequencyMhz(), want, s_planner.quiet(usec))) applyClock(want);
 }
 
 // A short note about what the SD card did, if anything, or about a built-in default that was refused
@@ -1065,6 +1156,8 @@ void loop() {
   struct timeval tv;
   gettimeofday(&tv, nullptr);
   watchClock(tv);
+  spotifySetPageShown(s_page == PAGE_NOW_PLAYING);  // wifi_mode = sync: the Now Playing page keeps the radio on
+  serviceClock(nowMs, (int32_t)tv.tv_usec);
 
 #if CLOCK_SWEEP_FPS > 0
   // A sweeping second hand: frames at a steady rate, nothing scheduled.

@@ -13,6 +13,7 @@
     "hostname = my-clock\n"
     "ntp_server = time.nist.gov\n"
     "wifi_power_save = max\n"
+    "wifi_mode = sync\n"
     "units = imperial\n"
     "time_format = 12h\n"
     "date_format = mdy\n"
@@ -31,4 +32,5 @@
     "low_battery_shutdown = off\n"
     "battery_cutoff_v = 3.45\n"
     "cpu_mhz = 160\n"
+    "cpu_idle_mhz = 40\n"
     "weather_interval_min = 30\n";

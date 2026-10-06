@@ -15,6 +15,7 @@
 #define APP_HOSTNAME "my-clock"
 #define NTP_SERVER "time.nist.gov"
 #define WIFI_POWER_SAVE "max"
+#define WIFI_MODE "sync"
 #define USE_FAHRENHEIT 1
 #define TIME_FORMAT "12h"
 #define DATE_FORMAT "mdy"
@@ -33,4 +34,5 @@
 #define LOW_BATTERY_SHUTDOWN 0
 #define BATTERY_CUTOFF_V 3.45f
 #define CPU_MHZ 160
+#define CPU_IDLE_MHZ 40
 #define WEATHER_INTERVAL_MIN 30

@@ -92,6 +92,18 @@ class FramePlanner {
     prepared_ = false;
   }
 
+  // The CPU clock changed from `fromMhz` to `toMhz` (below 80 MHz everything takes longer: 30 ms to draw
+  // at 80 MHz is 120 ms at 20): what a draw and a send are expected to cost scales the other way round, so
+  // the first frame at the new clock is planned with the right lead.  The ceiling on one measurement
+  // (a stall must not move the schedule) scales with it.
+  void clockChanged(uint32_t fromMhz, uint32_t toMhz) {
+    if (fromMhz == 0 || toMhz == 0 || fromMhz == toMhz) return;
+    drawCostUs_ = scaleCost(drawCostUs_, fromMhz, toMhz);
+    sendCostUs_ = scaleCost(sendCostUs_, fromMhz, toMhz);
+    mhz_ = toMhz;
+  }
+  uint32_t mhz() const { return mhz_; }
+
   bool prepared() const { return prepared_; }
   time_t preparedSec() const { return preparedSec_; }
   bool preparedScheduled() const { return preparedScheduled_; }
@@ -101,8 +113,17 @@ class FramePlanner {
   int32_t latencyUs() const { return latencyUs_; }
 
  private:
-  // One freak measurement (a stall in the middle of a draw) must not move the schedule for long.
-  static uint32_t clampCost(uint32_t us) { return us > 150000 ? 150000 : us; }
+  // One freak measurement (a stall in the middle of a draw) must not move the schedule for long.  (The
+  // ceiling is for the clocks of 80 MHz and up; below that a normal draw takes longer, and so does the ceiling.)
+  uint32_t clampCost(uint32_t us) const {
+    const uint32_t cap = mhz_ < 80 ? (uint32_t)((uint64_t)150000 * 80 / mhz_) : 150000;
+    return us > cap ? cap : us;
+  }
+  uint32_t scaleCost(uint32_t us, uint32_t fromMhz, uint32_t toMhz) const {
+    const uint64_t v = (uint64_t)us * fromMhz / toMhz;
+    const uint32_t cap = toMhz < 80 ? (uint32_t)((uint64_t)150000 * 80 / toMhz) : 150000;
+    return v > cap ? cap : (uint32_t)v;
+  }
 
   int32_t latencyUs_;
   bool prepared_ = false;
@@ -111,4 +132,5 @@ class FramePlanner {
   time_t lastSentSec_ = 0;
   uint32_t drawCostUs_ = 30000;
   uint32_t sendCostUs_ = 15000;
+  uint32_t mhz_ = 80;  // the CPU clock the costs are for
 };

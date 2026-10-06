@@ -28,7 +28,9 @@ enum DateFormat : uint8_t {
 };
 enum BatteryMode : uint8_t { BATTERY_AUTO = 0, BATTERY_NONE };
 enum WifiSave : uint8_t { WIFISAVE_NORMAL = 0, WIFISAVE_MAX };
+enum WifiMode : uint8_t { WIFIMODE_ALWAYS = 0, WIFIMODE_SYNC };  // radio connected all the time, or only for the syncs (radio_plan.h)
 enum CpuSpeed : uint8_t { CPU_80 = 0, CPU_160, CPU_240 };
+enum CpuIdle : uint8_t { CPUIDLE_OFF = 0, CPUIDLE_80, CPUIDLE_40, CPUIDLE_20, CPUIDLE_10 };  // the clock while the radio is off
 
 struct Settings {
   // --- WiFi ---------------------------------------------------------------------
@@ -40,6 +42,7 @@ struct Settings {
   char hostname[32] = "rlcd-clock";
   char ntpServer[48] = "";  // "" = the built-in list
   uint8_t wifiPowerSave = WIFISAVE_NORMAL;  // what the Arduino core does anyway; "max" is untried and can delay the time sync
+  uint8_t wifiMode = WIFIMODE_ALWAYS;       // "sync": the radio is off between syncs (untried on the board)
   // --- units and formats --------------------------------------------------------
   uint8_t units = UNITS_METRIC;
   uint8_t timeFormat = TIME_24H;
@@ -63,6 +66,7 @@ struct Settings {
   float batteryCutoffV = 3.30f;
   // --- power --------------------------------------------------------------------
   uint8_t cpuSpeed = CPU_80;
+  uint8_t cpuIdle = CPUIDLE_OFF;  // the CPU clock while the radio is off; off = no change (untried on the board)
   // --- weather ------------------------------------------------------------------
   int32_t weatherIntervalMin = 15;
 
@@ -77,6 +81,12 @@ struct Settings {
   bool time12h() const { return timeFormat == TIME_12H; }
   bool hasLatLon() const { return latitude != 0 || longitude != 0; }
   int cpuMhz() const { return cpuSpeed == CPU_240 ? 240 : (cpuSpeed == CPU_160 ? 160 : 80); }
+  // The clock while the radio is off, or 0 for "the same as cpuMhz()".  Never above cpuMhz().
+  int cpuIdleMhz() const {
+    const int mhz = cpuIdle == CPUIDLE_80 ? 80 : cpuIdle == CPUIDLE_40 ? 40 : cpuIdle == CPUIDLE_20 ? 20 : cpuIdle == CPUIDLE_10 ? 10 : 0;
+    return mhz > 0 && mhz < cpuMhz() ? mhz : 0;
+  }
+  bool syncMode() const { return wifi && wifiMode == WIFIMODE_SYNC; }
   bool hasBattery() const { return battery != BATTERY_NONE; }
 };
 

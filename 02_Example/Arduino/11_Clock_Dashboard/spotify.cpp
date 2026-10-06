@@ -17,6 +17,7 @@
 #include "spotify_parse.h"
 #include "spotify_helper_script.h"
 #include "link_page.h"
+#include "radio_plan.h"
 #include "timeutil.h"
 #include "tls.h"
 #include "util.h"
@@ -47,6 +48,8 @@ const uint32_t kRefreshTokenLifetimeS = 180UL * 86400UL;  // Spotify: refresh to
 const int kRenewHintDays = 14;
 const time_t kMinPlausibleEpoch = 1704067200;  // 2024-01-01
 const int kIdlePollsBeforeSlowdown = 60;       // ~30 minutes at the idle rate
+const uint32_t kPausedHoldMs = 5UL * 60UL * 1000UL;  // wifi_mode = sync: the radio stays on this long after music was playing or a command was sent
+const uint32_t kPageHoldMs = 60UL * 1000UL;          // ... and this long after the Now Playing page was last on screen
 
 struct Reply {
   int code = -1;  // HTTP status, or <= 0 for a transport error
@@ -68,6 +71,9 @@ bool s_linked = false;
 SpotifyInfo s_info;
 uint32_t s_sampledMs = 0;
 uint32_t s_nextPollMs = 0;
+bool s_peekDone = false;                   // wifi_mode = sync: this radio session has looked at the player once
+uint32_t s_lastActiveMs = 0;               // when the player was last seen playing, or a command was sent
+volatile uint32_t s_pageHoldUntilMs = 0;   // the UI task shows the Now Playing page: the radio stays on until then
 int s_idlePolls = 0;
 int s_errorStreak = 0;
 int s_authFailures = 0;
@@ -96,6 +102,7 @@ bool timeTrusted() {
 }
 
 void publish() {
+  if (s_info.status == SPOTIFY_PLAYING) s_lastActiveMs = millis();
   StateLock lock;
   g_state.spotify = s_info;
   g_state.spotifySampledMs = s_sampledMs;
@@ -309,6 +316,7 @@ uint32_t errorBackoffMs() {
 }
 
 void pollPlayer() {
+  s_peekDone = true;
   if (!ensureAccessToken()) {
     if (s_linked) {  // say so instead of leaving the last track frozen on screen
       s_errorStreak++;
@@ -431,6 +439,7 @@ void handleResult(const Reply &r, const char *what) {
 }
 
 void handleCommand(SpotifyCommand cmd) {
+  s_lastActiveMs = millis();  // (wifi_mode = sync: the radio stays on for a while, for the confirming poll and what comes next)
   if (cmd == SPOTIFY_CMD_UNLINK) {
     forgetAccount("Unlinked");
     return;
@@ -762,7 +771,10 @@ bool spotifyPost(SpotifyCommand cmd) {
 void spotifyTick() {
   if (!spotifyConfigured()) return;
   const bool wifiUp = WiFi.status() == WL_CONNECTED;
-  const bool serving = !s_linked || (s_info.linkDaysLeft >= 0 && s_info.linkDaysLeft <= kRenewHintDays);
+  // The linking page (or the renewal hint) is served all the time, except in wifi_mode = sync, where it
+  // needs the radio on and is served only while the Now Playing page is open.
+  const bool pageOpen = !g_cfg.syncMode() || radioplan::demandActive(millis(), s_pageHoldUntilMs);
+  const bool serving = (!s_linked || (s_info.linkDaysLeft >= 0 && s_info.linkDaysLeft <= kRenewHintDays)) && pageOpen;
 
   refreshLinkInfo(serving && wifiUp, wifiUp);
   serveLinkPage(serving, wifiUp);
@@ -788,4 +800,55 @@ void spotifyTick() {
     return;
   }
   if ((int32_t)(millis() - s_nextPollMs) >= 0) pollPlayer();
+}
+
+// ---- wifi_mode = sync: the radio comes and goes (net_task.cpp, radio_plan.h) ----------------------------
+void spotifySetPageShown(bool shown) {
+  if (shown) s_pageHoldUntilMs = millis() + kPageHoldMs;  // a minute from now (the next call, while it is shown, moves it on)
+}
+
+bool spotifyWantsRadio() {
+  if (!spotifyConfigured()) return false;
+  const uint32_t now = millis();
+  if (s_queue && uxQueueMessagesWaiting(s_queue) > 0) return true;  // a command waits for the radio
+  if (s_info.status == SPOTIFY_PLAYING) return true;                // music is playing: keep the strip live
+  if (s_info.status == SPOTIFY_PAUSED && (uint32_t)(now - s_lastActiveMs) < kPausedHoldMs) return true;
+  return radioplan::demandActive(now, s_pageHoldUntilMs);           // the Now Playing page is open
+}
+
+void spotifyWindowBegin() {
+  s_peekDone = false;
+  s_nextPollMs = 0;  // look at the player as soon as the radio is up
+}
+
+bool spotifyPeekPending() {
+  return spotifyConfigured() && s_linked && !s_peekDone && timeTrusted() && rateLimitRemaining() == 0;
+}
+
+// The radio is about to be switched off: let go of the connections, and do not leave a track on the screen
+// that nobody is following any more.
+void spotifyRadioDown() {
+  s_apiHttp.end();
+  s_apiClient.stop();
+  if (s_web) {
+    s_web->stop();
+    delete s_web;
+    s_web = nullptr;
+    MDNS.end();
+  }
+  if (s_info.status == SPOTIFY_PLAYING || s_info.status == SPOTIFY_PAUSED) {
+    s_info.title[0] = s_info.artist[0] = s_info.album[0] = s_info.device[0] = 0;
+    s_info.durationMs = s_info.progressMs = 0;
+    s_info.status = SPOTIFY_IDLE;
+  }
+  s_info.linkUrl[0] = 0;
+  publish();
+}
+
+void spotifyFlushQueue(const char *why) {
+  if (!s_queue) return;
+  uint8_t c;
+  bool any = false;
+  while (xQueueReceive(s_queue, &c, 0) == pdTRUE) any = true;
+  if (any) stateNotice(why, TOAST_WARN);
 }

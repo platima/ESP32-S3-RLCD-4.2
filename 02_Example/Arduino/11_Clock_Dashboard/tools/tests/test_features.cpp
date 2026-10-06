@@ -84,7 +84,7 @@ std::string dump(const Settings &s) {
 void testSettingsTable() {
   section("settings table");
   const size_t n = settingCount();
-  CHECK(n == 27);
+  CHECK(n == 29);
   CHECK(n <= 32);  // userSet is a 32 bit mask
   CHECK_STR(settingKey(n), "");
   CHECK_STR(settingNvsKey(n), "");
@@ -1637,6 +1637,89 @@ void testBackupWifiSettings() {
 }
 
 // ===========================================================================
+// WiFi mode and the idle CPU clock
+// ===========================================================================
+void testPowerSettings() {
+  section("WiFi mode and idle clock settings");
+  const Settings d;
+  CHECK(d.wifiMode == WIFIMODE_ALWAYS && !d.syncMode());  // nothing changes unless asked for
+  CHECK(d.cpuIdle == CPUIDLE_OFF && d.cpuIdleMhz() == 0);
+  CHECK_STR(settingNvsKey(idx("wifi_mode")), "wmode");
+  CHECK_STR(settingNvsKey(idx("cpu_idle_mhz")), "cpuidle");
+
+  for (const char *v : {"sync", "Sync", "sync-only", "periodic", "saver", " SYNC "}) {
+    const Applied a = apply(std::string("wifi_mode = ") + v);
+    if (a.s.wifiMode != WIFIMODE_SYNC) printf("  [%s] was not sync\n", v);
+    CHECK(a.s.wifiMode == WIFIMODE_SYNC && a.r.problems() == 0 && a.s.syncMode());
+  }
+  for (const char *v : {"always", "on", "connected", "stay"}) {
+    Settings sync;
+    sync.wifiMode = WIFIMODE_SYNC;
+    const Applied a = apply(std::string("wifi_mode = ") + v, sync);
+    CHECK(a.s.wifiMode == WIFIMODE_ALWAYS && a.r.problems() == 0);
+  }
+  for (const char *v : {"sometimes", "1", "wifi", "30"}) {
+    const Applied a = apply(std::string("wifi_mode = ") + v);
+    if (a.r.bad != 1) printf("  [%s] was not refused\n", v);
+    CHECK(a.r.bad == 1 && a.s.wifiMode == WIFIMODE_ALWAYS);
+  }
+  CHECK(apply("WiFi Mode: sync").s.syncMode());
+  CHECK(apply("wifi_sync = sync").s.syncMode());  // an alias
+  CHECK(apply("radio-mode = sync").s.wifiMode == WIFIMODE_SYNC);
+  {  // sync mode needs the radio: with WiFi off it is moot
+    const Applied a = apply("wifi_mode = sync\nwifi = off");
+    CHECK(a.s.wifiMode == WIFIMODE_SYNC && !a.s.syncMode());
+  }
+
+  // the idle clock: a number, off, or the usual "MHz" after it
+  struct Case {
+    const char *text;
+    int mhz;  // the value, 0 = off
+  };
+  const Case cases[] = {{"off", 0}, {"same", 0}, {"none", 0}, {"no", 0}, {"0", 0},   {"80", 80}, {"80 MHz", 80}, {"80mhz", 80},
+                        {"40", 40}, {"40 MHz", 40}, {"20", 20}, {"20MHz", 20}, {"10", 10}, {"10 mhz", 10}};
+  for (const Case &c : cases) {
+    Settings fast;
+    fast.cpuSpeed = CPU_240;  // so that every idle value is below it
+    const Applied a = apply(std::string("cpu_idle_mhz = ") + c.text, fast);
+    if (a.r.problems() != 0 || a.s.cpuIdleMhz() != c.mhz) printf("  [%s] gave %d (problems %d)\n", c.text, a.s.cpuIdleMhz(), a.r.problems());
+    CHECK(a.r.problems() == 0 && a.s.cpuIdleMhz() == c.mhz);
+  }
+  for (const char *v : {"30", "5", "160", "240", "fast", "20.5"}) {
+    const Applied a = apply(std::string("cpu_idle_mhz = ") + v);
+    if (a.r.bad != 1) printf("  [%s] was not refused\n", v);
+    CHECK(a.r.bad == 1 && a.s.cpuIdle == CPUIDLE_OFF);
+  }
+  CHECK(apply("cpu idle = 40").s.cpuIdle == CPUIDLE_40);  // spelling and aliases
+  CHECK(apply("idle_clock = 20").s.cpuIdle == CPUIDLE_20);
+  CHECK(apply("CPU-Idle-MHz: 10").s.cpuIdle == CPUIDLE_10);
+
+  // an idle clock that is not below the working one means "no change": the working clock is the floor
+  Settings s;
+  s.cpuIdle = CPUIDLE_80;
+  s.cpuSpeed = CPU_80;
+  CHECK(s.cpuIdleMhz() == 0);
+  s.cpuSpeed = CPU_160;
+  CHECK(s.cpuIdleMhz() == 80);
+  s.cpuIdle = CPUIDLE_40;
+  s.cpuSpeed = CPU_80;
+  CHECK(s.cpuIdleMhz() == 40);
+  s.cpuIdle = CPUIDLE_10;
+  s.cpuSpeed = CPU_240;
+  CHECK(s.cpuIdleMhz() == 10);
+
+  // they come out of the example file, with their help text
+  static char buf[16384];
+  Settings cur;
+  cur.wifiMode = WIFIMODE_SYNC;
+  cur.cpuIdle = CPUIDLE_20;
+  CHECK(renderExampleConfig(cur, "", buf, sizeof buf) > 0);
+  CHECK(strstr(buf, "# wifi_mode = sync") != nullptr && strstr(buf, "# cpu_idle_mhz = 20") != nullptr);
+  const Applied back = apply(buf);  // and read back, they give the same
+  CHECK(back.s.wifiMode == WIFIMODE_ALWAYS);  // (everything commented out: nothing is applied)
+}
+
+// ===========================================================================
 // Battery capacity and voltage calibration
 // ===========================================================================
 void testBatteryCalibrationSetting() {
@@ -2178,6 +2261,7 @@ int main(int argc, char **argv) {
   testSettingsForget();
   testSettingsExample();
   testBackupWifiSettings();
+  testPowerSettings();
   testBatteryCalibrationSetting();
   testWifiPick();
   testWifiPickDay();

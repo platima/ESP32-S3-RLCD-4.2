@@ -56,6 +56,12 @@ const EnumName kBatteryNames[] = {{"auto", BATTERY_AUTO}, {"automatic", BATTERY_
 const EnumName kWifiSaveNames[] = {{"normal", WIFISAVE_NORMAL}, {"off", WIFISAVE_NORMAL}, {"min", WIFISAVE_NORMAL},
                                    {"default", WIFISAVE_NORMAL}, {"max", WIFISAVE_MAX},   {"maximum", WIFISAVE_MAX},
                                    {"on", WIFISAVE_MAX},        {"saver", WIFISAVE_MAX},  {nullptr, 0}};
+const EnumName kWifiModeNames[] = {{"always", WIFIMODE_ALWAYS}, {"on", WIFIMODE_ALWAYS}, {"connected", WIFIMODE_ALWAYS}, {"stay", WIFIMODE_ALWAYS},
+                                   {"sync", WIFIMODE_SYNC},     {"sync-only", WIFIMODE_SYNC}, {"periodic", WIFIMODE_SYNC}, {"saver", WIFIMODE_SYNC},
+                                   {nullptr, 0}};
+const EnumName kCpuIdleNames[] = {{"off", CPUIDLE_OFF}, {"same", CPUIDLE_OFF}, {"none", CPUIDLE_OFF}, {"no", CPUIDLE_OFF}, {"0", CPUIDLE_OFF},
+                                  {"80", CPUIDLE_80},   {"80mhz", CPUIDLE_80}, {"40", CPUIDLE_40},    {"40mhz", CPUIDLE_40},
+                                  {"20", CPUIDLE_20},   {"20mhz", CPUIDLE_20}, {"10", CPUIDLE_10},    {"10mhz", CPUIDLE_10}, {nullptr, 0}};
 const EnumName kCpuNames[] = {{"80", CPU_80},   {"80mhz", CPU_80},   {"160", CPU_160}, {"160mhz", CPU_160},
                               {"240", CPU_240}, {"240mhz", CPU_240}, {nullptr, 0}};
 
@@ -89,6 +95,12 @@ const Def kDefs[] = {
      "power, but every reply can come up to a third of a second late, the network time\n"
      "included (look at \"last step\" on the Info page).  The Spotify setup page always\n"
      "runs in normal."},
+    {"wifi_mode", "wmode", T_ENUM, OFF(wifiMode), 0, 0, 0, kWifiModeNames, false, "WiFi",
+     "always or sync.  Always keeps the radio connected.  Sync switches it off between syncs: it\n"
+     "wakes for the network time (hourly) and the weather (every weather_interval_min), looks at\n"
+     "Spotify once each time, and stays on while music plays, after a key press and on the Now\n"
+     "Playing page.  Draws far less on a battery; the Spotify strip and the link page need that page\n"
+     "or a key press to wake the radio.  See the README."},
     // 8
     {"units", "units", T_ENUM, OFF(units), 0, 0, 0, kUnitNames, false, "Units and formats",
      "metric (degrees C, km/h) or imperial (degrees F, mph)."},
@@ -144,6 +156,12 @@ const Def kDefs[] = {
     // 25
     {"cpu_mhz", "cpu", T_ENUM, OFF(cpuSpeed), 0, 0, 0, kCpuNames, false, "Power",
      "80, 160 or 240.  80 uses the least power and is plenty for a clock."},
+    {"cpu_idle_mhz", "cpuidle", T_ENUM, OFF(cpuIdle), 0, 0, 0, kCpuIdleNames, false, "Power",
+     "off, 80, 40, 20 or 10: the CPU clock while the radio is off (wifi = off, or between the\n"
+     "syncs of wifi_mode = sync).  Slower draws less and a frame takes longer to draw: about 30 ms\n"
+     "at 80, 60 at 40, 120 at 20.  The clock goes back to cpu_mhz while the radio is on, for a few\n"
+     "seconds after a button press, and for as long as a computer is on the USB port (the console\n"
+     "may stop below 80 MHz).  off = no change."},
     // 26
     {"weather_interval_min", "wxint", T_INT, OFF(weatherIntervalMin), 0, 5, 240, nullptr, false, "Weather",
      "Minutes between weather updates, 5 to 240 (default 15)."},
@@ -165,6 +183,8 @@ const Alias kAliases[] = {
     {"clock_format", "time_format"}, {"label", "location_label"},    {"place", "location"},
     {"city", "location"},           {"wifi_enabled", "wifi"},        {"cpu", "cpu_mhz"},
     {"cpu_speed", "cpu_mhz"},       {"offset", "indoor_offset"},     {"temp_offset", "indoor_offset"},
+    {"wifi_sync", "wifi_mode"},     {"radio_mode", "wifi_mode"},     {"cpu_idle", "cpu_idle_mhz"},
+    {"idle_cpu", "cpu_idle_mhz"},   {"idle_clock", "cpu_idle_mhz"},
     {"backup_ssid", "wifi_backup_ssid"},          {"backup_wifi", "wifi_backup_ssid"},
     {"backup_network", "wifi_backup_ssid"},       {"wifi_ssid2", "wifi_backup_ssid"},
     {"ssid2", "wifi_backup_ssid"},                {"second_ssid", "wifi_backup_ssid"},

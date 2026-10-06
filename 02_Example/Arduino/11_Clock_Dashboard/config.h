@@ -108,6 +108,14 @@
 #define WIFI_POWER_SAVE "normal"
 #endif
 
+// "always" keeps the radio connected.  "sync" switches it off between syncs: it wakes for the network time (hourly)
+// and the weather (every WEATHER_INTERVAL_MIN), looks at Spotify once each time, and stays on while music plays,
+// after a key press and on the Now Playing page.  Far less power on a battery, see the README ("Saving power").
+// Not yet tried on the board.
+#ifndef WIFI_MODE
+#define WIFI_MODE "always"
+#endif
+
 // The clock's name on the network: letters, digits and '-'.  The Spotify setup page is http://<name>.local
 #ifndef APP_HOSTNAME
 #define APP_HOSTNAME "rlcd-clock"
@@ -215,6 +223,13 @@
 // at least.)  The PSRAM switch is a build option of the Arduino IDE and cannot be set here.
 #ifndef CPU_MHZ
 #define CPU_MHZ 80
+#endif
+// The clock while the radio is off (WIFI_ENABLED 0, or between the syncs of WIFI_MODE "sync"): 0 = the same as CPU_MHZ,
+// or 80, 40, 20 or 10.  Slower draws less, and a frame takes longer to draw (about 30 ms at 80 MHz, 120 at 20).  Not
+// yet tried on the board: below 80 MHz the clock of some peripherals follows the CPU, and the USB console may stop,
+// so the clock stays at CPU_MHZ for as long as a computer is on the USB port.
+#ifndef CPU_IDLE_MHZ
+#define CPU_IDLE_MHZ 0
 #endif
 
 // ----------------------------------------------------------------------------

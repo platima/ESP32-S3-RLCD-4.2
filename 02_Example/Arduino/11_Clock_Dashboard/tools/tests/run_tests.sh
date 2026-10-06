@@ -31,6 +31,7 @@ g++ $FLAGS -isystem "$AJ" -I../.. \
 g++ $FLAGS -I../.. \
     test_features.cpp ../../settings.cpp ../../tz_table.cpp \
     -o build/test_features
+g++ $FLAGS -I../.. test_radio.cpp -o build/test_radio
 # The defaults config.h gives (build_defaults.h), four ways: on its own, then with a secrets.h that sets
 # everything, one with mistakes in it and one with values on the limits (the override_*.h files play
 # the secrets.h).  -Werror: a macro that config.h does not guard with #ifndef is a "redefined" error.
@@ -46,6 +47,7 @@ g++ -std=c++17 -O1 -Wall -Wextra -I../.. battery_sim.cpp -o build/battery_sim
 
 run ./build/test_logic
 run ./build/test_features
+run ./build/test_radio
 for variant in factory all bad edge; do
   echo "[build defaults: $variant]"
   run ./build/test_builddefaults_$variant

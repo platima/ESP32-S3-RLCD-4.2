@@ -16,6 +16,7 @@
 #include "drift.h"
 #include "log.h"
 #include "power.h"
+#include "radio_plan.h"
 #include "spotify.h"
 #include "tls.h"
 #include "tz_table.h"
@@ -33,6 +34,8 @@ Preferences s_prefs;  // namespace "clock"
 volatile uint32_t s_lastSyncUtc = 0;  // seconds; 32 bits so the lwIP task and this one never see a torn value
 volatile bool s_rtcWriteRequest = false;
 volatile bool s_weatherNow = false;
+volatile uint32_t s_demandUntilMs = 0;  // wifi_mode = sync: a key press holds the radio on until then (netWake)
+volatile bool s_radioNeedsFast = false;  // the radio is on or about to be: the CPU clock must stay at 80 MHz or more
 bool s_tzFromOverride = false;
 
 // The timer and the system clock read together at the end of each NTP sync, for the drift
@@ -291,17 +294,35 @@ bool mainNetworkInRange() {
   return seen;
 }
 
+// Drops a progress message ("Connecting to WiFi...") that the radio going off would leave behind; a failure
+// message ("Weather update failed") stays until the next success.
+void clearProgressStatus() {
+  static const char *const progress[] = {"Connecting to WiFi...", "Syncing time...", "Finding location...", "Updating weather..."};
+  StateLock lock;
+  for (const char *p : progress) {
+    if (!strcmp(g_state.status, p)) {
+      g_state.status[0] = 0;
+      return;
+    }
+  }
+}
+
+// What the Info page says about the radio (wifi_mode = sync).  `wakeInSec` is -1 when not known.
+void publishRadio(bool sync, bool asleep, int32_t wakeInSec, uint32_t onMs, uint32_t sinceMs, uint32_t sessions) {
+  StateLock lock;
+  g_state.radioSync = sync;
+  g_state.radioAsleep = asleep;
+  g_state.radioWakeInSec = wakeInSec;
+  g_state.radioOnPermille = sinceMs ? (uint16_t)((uint64_t)onMs * 1000 / sinceMs) : 0;
+  g_state.radioSessions = sessions;
+}
+
 void netTask(void *) {
   const bool haveBackup = g_cfg.hasBackupWifi();
   const bool wifiConfigured = g_cfg.hasMainWifi() || haveBackup;
   const wifi_ps_type_t saveMode = g_cfg.wifiPowerSave == WIFISAVE_MAX ? WIFI_PS_MAX_MODEM : WIFI_PS_MIN_MODEM;
+  const bool syncMode = g_cfg.syncMode();  // wifi_mode = sync: the radio is on only for a session (radio_plan.h)
   bool lowLatency = false;
-
-  WiFi.persistent(false);
-  WiFi.setHostname(g_cfg.hostname);  // before mode(): turning the station on is what copies the name to the network interface
-  WiFi.mode(WIFI_STA);
-  WiFi.setAutoReconnect(true);
-  WiFi.setSleep(saveMode);
 
   spotifyBegin();
 
@@ -315,6 +336,48 @@ void netTask(void *) {
   pick.configure(g_cfg.hasMainWifi(), haveBackup);
   bool leavingBackup = false;  // we dropped the backup on purpose to go back to the main network
 
+  // wifi_mode = sync.  The planner says when the radio is on; these are the timers it is told about.  (net_task
+  // in always mode keeps none of this: SNTP runs by itself every hour and the radio never goes off.)
+  radioplan::Planner plan(syncMode, haveBackup ? radioplan::kConnectTimeoutMs : 25000UL);
+  bool radioOn = false;
+  bool ntpEver = false;  // the network time was set at least once in this run
+  uint32_t ntpAtMs = 0, ntpRetryAtMs = 0, lastRadioPublishMs = 0, bootMs = millis();
+  int weatherFails = 0, locationFails = 0;
+
+  auto startRadio = [&]() {
+    s_radioNeedsFast = true;  // WiFi works from 80 MHz up: the UI loop raises the clock if it is lower
+    for (int i = 0; i < 300 && getCpuFrequencyMhz() < 80; i++) vTaskDelay(pdMS_TO_TICKS(10));
+    WiFi.persistent(false);
+    WiFi.setHostname(g_cfg.hostname);  // before mode(): turning the station on is what copies the name to the network interface
+    WiFi.mode(WIFI_STA);
+    WiFi.setAutoReconnect(true);
+    WiFi.setSleep(saveMode);
+    lowLatency = false;
+    wasConnected = false;
+    lastBeginMs = 0;
+    radioOn = true;
+    spotifyWindowBegin();
+    if (syncMode) LOGF(TAG, "radio on (session %u)", (unsigned)plan.sessions() + 1);
+  };
+  auto stopRadio = [&]() {
+    spotifyRadioDown();
+    if (sntpStarted) {
+      esp_sntp_stop();
+      sntpStarted = false;
+    }
+    WiFi.disconnect(true, false);
+    WiFi.mode(WIFI_OFF);
+    pick.radioOff();
+    publishWifi(false);
+    clearProgressStatus();
+    wasConnected = false;
+    radioOn = false;
+    s_radioNeedsFast = false;  // the UI loop may slow the clock down now
+    LOGF(TAG, "radio off (on for %u s so far, %u sessions)", (unsigned)(plan.radioOnMs(millis()) / 1000), (unsigned)plan.sessions());
+  };
+
+  if (!syncMode && wifiConfigured) startRadio();  // always on, from the start (with no network name there is nothing to join)
+
   for (;;) {
     const uint32_t now = millis();
 
@@ -324,11 +387,63 @@ void netTask(void *) {
     }
 
     if (!wifiConfigured) {
+      s_radioNeedsFast = false;  // no radio, ever
       stateSetStatus("No WiFi name set (see README)");
       publishWifi(false);
       spotifyTick();  // answers key presses with "no network" instead of queueing them
       vTaskDelay(pdMS_TO_TICKS(1000));
       continue;
+    }
+
+    {  // the forecast days shift at local midnight: refresh then instead of up to 15 min later
+      time_t t = time(nullptr);
+      struct tm lt;
+      localtime_r(&t, &lt);
+      if (lastYday >= 0 && lt.tm_yday != lastYday) s_weatherNow = true;
+      lastYday = lt.tm_yday;
+    }
+
+    if (syncMode) {
+      // What needs the radio?  (the timers are the ones of the always mode, plus the hourly network time)
+      radioplan::Inputs in;
+      in.online = radioOn && WiFi.status() == WL_CONNECTED;
+      const bool ntpWake = (!ntpEver || radioplan::due(now, ntpAtMs + radioplan::kNtpGraceMs)) && radioplan::due(now, ntpRetryAtMs);
+      const bool placeWake = !locationOk && radioplan::due(now, nextLocationMs);
+      const bool weatherWake = locationOk && (s_weatherNow || radioplan::due(now, nextWeatherMs));
+      in.workDue = ntpWake || placeWake || weatherWake || spotifyPeekPending();
+      in.holdSpotify = spotifyWantsRadio();
+      in.demand = radioplan::demandActive(now, s_demandUntilMs);
+      const bool wantOn = plan.update(now, in);
+      if (wantOn && !radioOn) startRadio();
+      if (!wantOn && radioOn) stopRadio();
+      if (plan.takeGaveUp()) {
+        LOGF(TAG, "could not join WiFi: next try in %u s", (unsigned)((plan.retryAtMs() - now) / 1000));
+        spotifyFlushQueue("Spotify: no network");
+        stateSetStatus("No WiFi, trying again later");
+      }
+      if (now - lastRadioPublishMs >= 1000) {
+        lastRadioPublishMs = now ? now : 1;
+        int32_t wake = -1;
+        if (!radioOn) {  // the earliest of what is due, and not before the back-off after a failed session ends
+          uint32_t earliest = now + 3600000UL;
+          bool any = false;
+          auto consider = [&](uint32_t at) {
+            if (!any || (int32_t)(at - earliest) < 0) earliest = at;
+            any = true;
+          };
+          consider(ntpEver ? ntpAtMs + radioplan::kNtpGraceMs : now);
+          if (locationOk) consider(s_weatherNow ? now : nextWeatherMs);
+          else consider(nextLocationMs);
+          uint32_t at = earliest;
+          if ((int32_t)(plan.retryAtMs() - at) > 0 && plan.retryAtMs() != 0) at = plan.retryAtMs();
+          wake = (int32_t)(at - now) > 0 ? (int32_t)((at - now) / 1000) : 0;
+        }
+        publishRadio(true, !radioOn, wake, plan.radioOnMs(now), now - bootMs, plan.sessions());
+      }
+      if (!radioOn) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+        continue;
+      }
     }
 
     const bool connected = WiFi.status() == WL_CONNECTED;
@@ -363,7 +478,7 @@ void netTask(void *) {
         WiFi.begin(ssid, pass[0] ? pass : nullptr);  // no password: an open network
         lastBeginMs = now ? now : 1;
       }
-      spotifyTick();  // answers key presses with "no network" instead of queueing them
+      if (!syncMode) spotifyTick();  // answers key presses with "no network" instead of queueing them (in sync mode they wait for the radio)
       vTaskDelay(pdMS_TO_TICKS(250));
       continue;
     }
@@ -395,7 +510,10 @@ void netTask(void *) {
       }
     }
 
-    if (!sntpStarted) {
+    // The network time.  Always mode: SNTP runs from the first connection on and syncs by itself every hour.
+    // Sync mode: it is started in a session that is near the hour (or has none yet), and stopped again once
+    // it has answered, or after twenty seconds without an answer (tried again in five minutes).
+    if (!sntpStarted && (!syncMode || ((!ntpEver || radioplan::due(now, ntpAtMs - radioplan::kNtpEarlyMs)) && radioplan::due(now, ntpRetryAtMs)))) {
       char tz[sizeof g_state.tzPosix];
       {
         StateLock lock;
@@ -423,6 +541,17 @@ void netTask(void *) {
       }
       LOGF(TAG, "NTP synced");  // never log while holding the lock: a stalled serial port would freeze the UI
       noteSyncForDrift();
+      ntpEver = true;
+      ntpAtMs = now + 3600UL * 1000UL;
+      if (syncMode && sntpStarted) {  // done for this session
+        esp_sntp_stop();
+        sntpStarted = false;
+      }
+    } else if (syncMode && sntpStarted && now - syncWaitStartMs > 20000) {
+      LOGF(TAG, "NTP: no reply in 20 s, trying again in 5 minutes");
+      esp_sntp_stop();
+      sntpStarted = false;
+      ntpRetryAtMs = now + 300000UL;
     }
 
     // TLS needs a believable clock: wait for NTP (or a valid RTC reading).
@@ -433,25 +562,19 @@ void netTask(void *) {
       continue;
     }
 
-    {  // the forecast days shift at local midnight: refresh then instead of up to 15 min later
-      time_t t = time(nullptr);
-      struct tm lt;
-      localtime_r(&t, &lt);
-      if (lastYday >= 0 && lt.tm_yday != lastYday) s_weatherNow = true;
-      lastYday = lt.tm_yday;
-    }
-
     if (!locationOk && (int32_t)(now - nextLocationMs) >= 0) {
       stateSetStatus("Finding location...");
       locationOk = resolveLocation();
-      if (!locationOk) nextLocationMs = now + 30000;
+      if (!locationOk) nextLocationMs = now + (syncMode ? radioplan::retryAfterMs(++locationFails) : 30000UL);
     }
 
     if (locationOk && (s_weatherNow || (int32_t)(now - nextWeatherMs) >= 0)) {
       stateSetStatus("Updating weather...");
       s_weatherNow = false;
       bool ok = fetchWeather();
-      nextWeatherMs = millis() + (ok ? (uint32_t)g_cfg.weatherIntervalMin * 60UL * 1000UL : WEATHER_RETRY_MS);
+      if (ok) weatherFails = 0;
+      nextWeatherMs = millis() + (ok ? (uint32_t)g_cfg.weatherIntervalMin * 60UL * 1000UL
+                                     : (syncMode ? radioplan::retryAfterMs(++weatherFails) : WEATHER_RETRY_MS));
       stateSetStatus(ok ? "" : "Weather update failed");
     } else if (locationOk) {
       // keep a stale failure message only until the next success
@@ -514,6 +637,7 @@ void netBegin() {
     LOGF(TAG, "WiFi is switched off in the settings");
     return;
   }
+  s_radioNeedsFast = true;  // until the network task knows better (the first session, or no radio at all)
   xTaskCreatePinnedToCore(netTask, "net", 16384, nullptr, 1, nullptr, 0);
 }
 
@@ -524,3 +648,7 @@ bool netTakeRtcWriteRequest() {
 }
 
 void netRequestWeatherRefresh() { s_weatherNow = true; }
+
+void netWake() { s_demandUntilMs = radioplan::demandUntil(millis()) | 1u; }
+
+bool netRadioNeedsFastClock() { return s_radioNeedsFast; }

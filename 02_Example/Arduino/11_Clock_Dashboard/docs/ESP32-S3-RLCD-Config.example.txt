@@ -56,6 +56,13 @@
 # included (look at "last step" on the Info page).  The Spotify setup page always
 # runs in normal.
 # wifi_power_save = normal
+#
+# always or sync.  Always keeps the radio connected.  Sync switches it off between syncs: it
+# wakes for the network time (hourly) and the weather (every weather_interval_min), looks at
+# Spotify once each time, and stays on while music plays, after a key press and on the Now
+# Playing page.  Draws far less on a battery; the Spotify strip and the link page need that page
+# or a key press to wake the radio.  See the README.
+# wifi_mode = always
 
 # ---- Units and formats -------------------------------------------
 #
@@ -133,6 +140,13 @@
 #
 # 80, 160 or 240.  80 uses the least power and is plenty for a clock.
 # cpu_mhz = 80
+#
+# off, 80, 40, 20 or 10: the CPU clock while the radio is off (wifi = off, or between the
+# syncs of wifi_mode = sync).  Slower draws less and a frame takes longer to draw: about 30 ms
+# at 80, 60 at 40, 120 at 20.  The clock goes back to cpu_mhz while the radio is on, for a few
+# seconds after a button press, and for as long as a computer is on the USB port (the console
+# may stop below 80 MHz).  off = no change.
+# cpu_idle_mhz = off
 
 # ---- Weather -----------------------------------------------------
 #
