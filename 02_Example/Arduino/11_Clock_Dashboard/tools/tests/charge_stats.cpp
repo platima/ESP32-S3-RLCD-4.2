@@ -111,8 +111,9 @@ struct Sim {
       nextPrint = t + 60000;
       const int n = d.bins_;
       const float level = n >= 4 ? (d.lifted(n - 1) + d.lifted(n - 2) + d.lifted(n - 3) + d.lifted(n - 4)) * 0.25f : 0;
-      printf("t=%7.2f min  truth=%.4f level=%.4f  trend=%+6.2f  plainLS=%+6.2f  step=%+6.1f mV  fullRef=%.4f  %s\n", m, truth,
-             level, d.slope_ * 1000, n >= 2 ? plainSlope(d, 0, n) : 0.0, d.step_ * 1000, d.fullRef_, names[s]);
+      printf("t=%7.2f min  truth=%.4f level=%.4f  trend=%+6.2f  plainLS=%+6.2f  step=%+6.1f mV  fullRef=%.4f  slow=%.4f blk=%d  %s\n", m, truth,
+             level, d.slope_ * 1000, n >= 2 ? plainSlope(d, 0, n) : 0.0, d.step_ * 1000, d.fullRef_,
+             d.slowCount_ ? d.slow_[d.slowCount_ - 1] : 0.0f, d.fullBlocked_ ? 1 : 0, names[s]);
     }
   }
 };
@@ -236,6 +237,22 @@ int main(int argc, char **argv) {
       return s.firstAt[DIS];
     });
   }
+  for (double r : {0.20, 0.10, 0.05}) {  // a light load in the middle of the curve: the slope is tiny
+    char name[96];
+    snprintf(name, sizeof name, "booted on battery at -%.2f mV/min, light load -> DISCHARGING", r);
+    latency(name, [r](Sim &s) {
+      s.run(900, [r](double m) { return 3.85 - r / 1000 * m; });
+      return s.firstAt[DIS];
+    });
+  }
+  for (double r : {0.15, 0.07}) {  // booted on battery near the top: a flat-looking fall that may first read as FULL
+    char name[96];
+    snprintf(name, sizeof name, "booted on battery at 4.17 V falling %.2f mV/min -> DISCHARGING", r);
+    latency(name, [r](Sim &s) {
+      s.run(900, [r](double m) { return 4.17 - r / 1000 * m; });
+      return s.firstAt[DIS];
+    });
+  }
   latency("booted at a flat 4.18 V -> FULL", [](Sim &s) {
     s.run(40, [](double) { return 4.18; });
     return s.firstAt[FUL];
@@ -264,6 +281,30 @@ int main(int argc, char **argv) {
       return s.firstAt[DIS] < 0 ? -1 : s.firstAt[DIS] - t0;
     });
   }
+  // A light load (the clock with the radio mostly off draws 10-45 mA from a 2500 mAh cell) makes the top of
+  // the curve fall by 0.07-0.3 mV a minute: the case that sat on FULL for hours with the first version.
+  for (double r : {0.40, 0.30, 0.20, 0.12, 0.07}) {
+    char name[96];
+    snprintf(name, sizeof name, "unplugged when full, light load, falls at %.2f mV/min -> DISCHARGING", r);
+    latency(name, [r](Sim &s) {
+      s.run(25, [](double) { return 4.19; });
+      const double t0 = s.now();
+      s.clearSeen();
+      s.run(600, [=](double m) { return 4.19 - r / 1000 * (m - t0); });
+      return s.firstAt[DIS] < 0 ? -1 : s.firstAt[DIS] - t0;
+    });
+  }
+  for (double r : {0.30, 0.12, 0.07}) {
+    char name[96];
+    snprintf(name, sizeof name, "unplugged when full with a 7 mV IR step, light load, falls at %.2f mV/min", r);
+    latency(name, [r](Sim &s) {
+      s.run(25, [](double) { return 4.19; });
+      const double t0 = s.now();
+      s.clearSeen();
+      s.run(600, [=](double m) { return 4.19 - 0.007 - r / 1000 * (m - t0); });
+      return s.firstAt[DIS] < 0 ? -1 : s.firstAt[DIS] - t0;
+    });
+  }
   for (double drop : {40.0, 25.0}) {
     char name[96];
     snprintf(name, sizeof name, "unplugged when full with a %.0f mV IR step, then -1 mV/min", drop);
@@ -283,6 +324,10 @@ int main(int argc, char **argv) {
   });
   rate("on battery -0.3 mV/min: CHARGING or FULL claimed", "should be 0", [=](Sim &s) {
     s.run(480, [](double m) { return 3.90 - 0.0003 * m; });
+    return (s.seen & powerBits) ? 1 : 0;
+  });
+  rate("on battery -0.07 mV/min, light load: CHARGING or FULL claimed", "should be 0", [=](Sim &s) {
+    s.run(480, [](double m) { return 3.95 - 0.00007 * m; });
     return (s.seen & powerBits) ? 1 : 0;
   });
   rate("pure noise at 3.70 V: CHARGING or FULL claimed", "should be 0", [=](Sim &s) {
@@ -306,6 +351,31 @@ int main(int argc, char **argv) {
     s.run(480, [](double) { return 4.19; });
     return s.changes;
   });
+  // After the charger ends the cell relaxes a few millivolts over some minutes: that is not a discharge.
+  for (double tau : {15.0, 30.0}) {
+    char name[96];
+    snprintf(name, sizeof name, "held full after the charger ends, 8 mV tail (tau %.0f min): changes", tau);
+    rate(name, "should be 0", [tau](Sim &s) {
+      s.run(25, [tau](double m) { return 4.19 + 0.008 * exp(-m / tau); });
+      s.clearSeen();
+      s.run(480, [tau](double m) { return 4.19 + 0.008 * exp(-(m + 25) / tau); });
+      return s.changes;
+    });
+  }
+  for (double dipMv : {13.0, 25.0}) {  // a cable knocked loose and pushed back: four minutes low, every hour or so
+    char name[96];
+    snprintf(name, sizeof name, "held full with a four minute dip of %.0f mV every hour or so: changes", dipMv);
+    rate(name, "informational: the twelve minute trend says discharging for a while", [dipMv](Sim &s) {
+      s.run(25, [](double) { return 4.19; });
+      s.clearSeen();
+      double dipAt = 20 + 50 * s.uniform();
+      s.run(480, [&](double m) {
+        if (m > dipAt + 4) dipAt = m + 40 + 50 * s.uniform();
+        return 4.19 - ((m >= dipAt && m < dipAt + 4) ? dipMv / 1000 : 0.0);
+      });
+      return s.changes;
+    });
+  }
   rate("held full with random level shifts within +-4 mV every ~40 min: changes", "should be 0", [&](Sim &s) {
     s.run(25, [](double) { return 4.19; });
     s.clearSeen();

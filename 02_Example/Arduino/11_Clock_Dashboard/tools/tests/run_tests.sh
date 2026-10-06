@@ -22,7 +22,7 @@ if [ ! -f "$AJ/ArduinoJson.h" ]; then
   exit 2
 fi
 
-FLAGS="-std=c++17 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-maybe-uninitialized -fsanitize=address,undefined"
+FLAGS="-std=c++17 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-maybe-uninitialized -fsanitize=address,undefined -fno-sanitize-recover=undefined"
 
 mkdir -p build
 g++ $FLAGS -isystem "$AJ" -I../.. \

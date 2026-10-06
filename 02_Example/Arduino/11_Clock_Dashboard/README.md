@@ -439,7 +439,13 @@ an LED), so `charge.h` works it out from how the battery voltage moves:
   straight-line fit, has to be confirmed by a second fit that allows one level shift;
 * the first three minutes after boot are not used at all: the board draws more while it joins WiFi and fetches over
   TLS, the battery sags under it and recovers, and in the simulations that recovery was taken for a plug-in on almost
-  every boot once the sag reached 60 mV.
+  every boot once the sag reached 60 mV;
+* **a slow history, for ending *full*.** Unplugging a full battery gives no step, and with a light load (the clock with
+  its radio mostly off draws 10 to 45 mA from a 2500 mAh cell) the top of the curve falls by only 0.07 to 0.3 mV a minute,
+  which twelve minutes cannot tell from flat: the first version sat on *full* for hours. So one level per five minutes is
+  also kept, for four hours: a charger holding the cell keeps it within a few millivolts of its plateau, a load takes it
+  down for good, and **a level 13 mV below the plateau ends *full***. Once *full* has ended for any reason, flat does not
+  bring it back until the last hour has not fallen by more than 1.2 mV (a recharge, or a cell that sits still).
 
 It is a heuristic and shows no icon rather than guess. Timings against simulated traces (noise, WiFi dips, level
 shifts; 300 random sequences each), not against the board:
@@ -449,11 +455,17 @@ shifts; 300 random sequences each), not against the board:
 | USB plugged in or pulled out with a step of 45 mV or more | about 1 minute (not in the first ~5 minutes after boot) |
 | ... with a small step | 5 to 10 minutes |
 | After a reboot | about 13 minutes, sometimes up to 20 (the Info page says *starting up*, then *learning*) |
-| A full battery unplugged (no step, the voltage just starts to fall) | 7 to 30 minutes, slower for lighter loads |
+| A full battery unplugged (no step, the voltage just starts to fall), a 1 to 2.5 mV/min fall | 7 to 15 minutes |
+| ... a 0.5 mV/min fall (about 150 mA) | 30 minutes |
+| ... a light load, a 0.3 mV/min fall (about 45 mA) | about 50 minutes, 30 with the 7 mV step an unplug usually has |
+| ... a lighter load, 0.12 mV/min (about 20 mA), or 0.07 mV/min (about 10 mA) | about 2 hours, or 3 hours (an hour or so with the step) |
 
 What it cannot do: charging slower than about 0.1C (under roughly 1.5 mV/min) is not recognised; a charger that lets the
-cell sag after it has finished looks like discharging, which for the cell it is; and a sudden jump in load of 15 mV or
-more is mistaken for a few minutes of charging about once in 60 jumps.
+cell sag after it has finished looks like discharging, which for the cell it is; a sudden jump in load of 15 mV or
+more is mistaken for a few minutes of charging about once in 60 jumps; and in the first 80 minutes after a boot, before
+the slow history is long enough to bring it back, a *full* that has ended stays ended (a knock on the cable then keeps
+the tick off until the 80 minutes are up). While the icon says *full* the **Left** line says *full* and no runtime is
+worked out: a clock that is on its own starts its estimate only after the icon has changed.
 
 The serial console command `battery` prints the voltage, the trend in mV/min, the last step and how much data the
 detector has, and the same line is logged once a minute; if the icon ever disagrees with reality those are the numbers
@@ -674,7 +686,8 @@ build the sketch.
   `ARDUINOJSON_SRC` to ArduinoJson's `src` folder if it is not in `~/Arduino/libraries`.
 * **`tools/tests/battery_sim.cpp`** simulates whole battery discharges to choose the constants of `battery_est.h` (see
   the file header: `g++ -std=c++17 -O2 -I../.. battery_sim.cpp`).
-* **`bash tools/tests/run_charge_stats.sh`** measures how well `charge.h` does: detection times and false-event rates
+* **`bash tools/tests/run_charge_stats.sh`** measures how well `charge.h` does (including the light loads and the plateau
+  that wanders or relaxes): detection times and false-event rates
   over 300 random voltage traces per scenario, which is where the table in [Battery](#battery) comes from. Give it a
   scenario number and a sequence number to trace one case (`bash run_charge_stats.sh 300 31 7`).
 * **`python tools/tests/test_spotify_link.py`** tests the Spotify helper script end to end against a fake clock.

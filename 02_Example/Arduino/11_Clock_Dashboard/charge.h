@@ -37,12 +37,24 @@
 // while it joins WiFi and fetches over TLS, the battery sags, and the recovery
 // looks like a plug-in.
 //
+// A third thing is looked at for ending FULL: a slow history of one level per five
+// minutes (four hours).  Unplugging a full battery gives no step, and a light load
+// (the clock with its radio mostly off draws 10 to 45 mA, a 2500 mAh cell) makes the top of the
+// curve fall by only 0.07 to 0.3 mV a minute, which the twelve-minute trend cannot tell
+// from flat.  A charger holding the cell keeps it within a few millivolts of its plateau,
+// though, while a load takes it down for good: FULL ends when the slow level has fallen
+// 13 mV below the plateau (not counting the first minutes of FULL, in
+// which the cell relaxes after the charger ended) ends FULL.  However
+// FULL ended, flat is not taken for FULL again until the cell has not fallen by more than
+// 1.2 mV in the last hour (a recharge, or a cell that sits still, gives that).  A fall of 0.3 mV a minute ends FULL after
+// about an hour, one of 0.07 after three.
+//
 // It is a heuristic and says UNKNOWN rather than guessing when the evidence is
 // thin (for instance in the flat middle of the discharge curve, or in the first
 // minutes after boot).  FULL means "sitting flat at the top of the curve", which
 // is what a charger holding the cell at 4.2 V looks like; it also reads as full
-// for a while after unplugging a full battery.  Pure logic with no Arduino
-// dependency; tools/tests simulates plausible traces.
+// for a while after unplugging a full battery (an hour or two with a light load).
+// Pure logic with no Arduino dependency; tools/tests simulates plausible traces.
 
 #include <math.h>
 #include <stdint.h>
@@ -71,6 +83,15 @@ class ChargeDetector {
   static constexpr float kFullV = 4.16f;              // flat at or above this: held full
   static constexpr float kTopV = 4.15f;               // up here only a hard fall counts as discharging
   static constexpr float kFullDropV = 0.015f;         // 15 mV below the plateau, and still falling, ends FULL
+
+  // The slow history: one level per five minutes, four hours of them, for ending FULL.
+  static constexpr int kBinsPerSlow = 20;             // 20 bins of 15 s
+  static constexpr int kSlowBins = 48;
+  static constexpr int kSlowSettle = 1;               // the first five minutes of FULL are not part of the plateau
+  static constexpr float kLongDropV = 0.013f;         // a slow level this far below the plateau ends FULL
+  static constexpr int kSlowFlatLen = 16;             // over the last 80 minutes, the first four slow levels against the last four:
+  static constexpr float kSlowFlatDropV = 0.0012f;    // ... no more than this lower, and FULL may come back
+  static constexpr int kTrendLen[3] = {8, 16, 32};    // windows of the slow trend shown on the Info page
 
   // Feed one voltage reading (volts) every few seconds.
   void addSample(float volts, uint32_t nowMs) {
@@ -110,6 +131,16 @@ class ChargeDetector {
   float slopeMvPerMin() const { return slope_ * 1000.0f; }
   // The last step measurement (last 30 s against 90..150 s ago) in mV; 0 until 150 s of data.
   float stepMv() const { return step_ * 1000.0f; }
+  // The slow history's trend in mV per minute, over the longest of the 160, 80 and 40 minutes there is
+  // data for (0 before 40 minutes).  Only shown; the decision about FULL is the drop below the plateau.
+  float longSlopeMvPerMin() const {
+    for (int w = 2; w >= 0; w--)
+      if (slowCount_ >= kTrendLen[w]) return slowSlope(slowCount_ - kTrendLen[w], slowCount_) * 1000.0f;
+    return 0;
+  }
+  // FULL ended (the cell is on its own) and has not been charged or sat still since: FULL cannot come back by
+  // merely looking flat.
+  bool leftFull() const { return fullBlocked_; }
 
  private:
   // The value a bin stands for: its highest reading when there are three or fewer, the second
@@ -134,11 +165,91 @@ class ChargeDetector {
       memmove(means_, means_ + 1, (kBins - 1) * sizeof(float));
       means_[kBins - 1] = level;
     }
+    slowAcc_[slowAccN_++] = level;
+    if (slowAccN_ == kBinsPerSlow) {  // five minutes of bins: one more slow level (before the trend looks at the state)
+      slowAccN_ = 0;
+      pushSlow(mean(slowAcc_, kBinsPerSlow));
+    }
     evaluate();
+  }
+
+  // (The bins are the upper levels of their readings already, so the mean of twenty of them is steady enough.)
+  static float mean(const float *v, int n) {
+    float sum = 0;
+    for (int i = 0; i < n; i++) sum += v[i];
+    return sum / (float)n;
+  }
+
+  void pushSlow(float level) {
+    if (slowCount_ < kSlowBins) {
+      slow_[slowCount_++] = level;
+    } else {
+      memmove(slow_, slow_ + 1, (kSlowBins - 1) * sizeof(float));
+      slow_[kSlowBins - 1] = level;
+    }
+    slowTotal_++;
+    evaluateSlow();
+  }
+
+  // The slow levels, once per five minutes.  While FULL: the plateau is the highest slow level since the
+  // first few minutes of FULL (which hold the charger's last minutes and the cell relaxing); a level 13 mV
+  // below it ends FULL.  A load takes a cell down for good, a charger holding it keeps it within a few
+  // millivolts of the plateau (the tests move it by 4 mV either way every 20 to 60 minutes), so the drop
+  // does not depend on how steep the fall is, which at 0.07 mV a minute cannot be told from noise in
+  // twelve minutes.  `fullBlocked_` then stays (it is also set by every other way out of FULL) until the last
+  // hour has not fallen by more than 1.2 mV, as a recharge or a cell that sits still gives: the twelve minute
+  // trend of a light load is "flat" and must not read as full again.
+  void evaluateSlow() {
+    const int n = slowCount_;
+    if (state_ == FULL) {
+      const int settled = (int)(slowTotal_ - fullSince_) - kSlowSettle;  // slow levels since FULL began, minus the settling
+      const int count = settled < n - 1 ? settled : n - 1;                // the newest level is the one being judged
+      if (count >= 1) {
+        const float plateau = slowMax(n - 1 - count, n - 1);
+        if (slow_[n - 1] < plateau - kLongDropV) {
+          fullBlocked_ = true;
+          state_ = DISCHARGING;  // not full, whatever the twelve minute trend says
+        }
+      }
+    }
+    if (fullBlocked_ && n >= kSlowFlatLen && slowMean(n - kSlowFlatLen, 4) - slowMean(n - 4, 4) <= kSlowFlatDropV)
+      fullBlocked_ = false;
+  }
+
+  // The highest of slow_[lo..hi): the plateau.
+  float slowMax(int lo, int hi) const {
+    float mx = slow_[lo];
+    for (int i = lo + 1; i < hi; i++)
+      if (slow_[i] > mx) mx = slow_[i];
+    return mx;
+  }
+
+  // Mean of the `count` slow levels from index lo.
+  float slowMean(int lo, int count) const {
+    float sum = 0;
+    for (int i = lo; i < lo + count; i++) sum += slow_[i];
+    return sum / (float)count;
+  }
+
+  // Least-squares slope of slow_[lo..hi) in volts per minute.
+  float slowSlope(int lo, int hi) const {
+    const int n = hi - lo;
+    double mean = 0;
+    for (int i = lo; i < hi; i++) mean += slow_[i];
+    mean /= n;
+    const double xMean = 0.5 * (n - 1);
+    double sxy = 0, sxx = 0;
+    for (int i = 0; i < n; i++) {
+      const double dx = i - xMean;
+      sxy += dx * (slow_[lo + i] - mean);
+      sxx += dx * dx;
+    }
+    return (float)(sxy / sxx / (double)kSlowMinutes);
   }
 
   void evaluate() {
     const int n = bins_;
+    const State before = state_;
 
     // 1. A plug / unplug step.
     if (n >= kMinBinsForStep) {
@@ -172,6 +283,10 @@ class ChargeDetector {
       slope_ = plainSlope(n);
       if (holdoff_ == 0 && upStreak_ == 0 && downStreak_ == 0) applyTrend(n);
     }
+
+    // However FULL ended, a gentle fall must not be able to bring it back by looking flat for twelve minutes.
+    // (What lifts that is in evaluateSlow(): the last hour has not fallen, which charging brings about too.)
+    if (before == FULL && state_ == DISCHARGING) fullBlocked_ = true;
   }
 
   void applyTrend(int n) {
@@ -182,7 +297,7 @@ class ChargeDetector {
     // noisier estimate, because the fit gets to pick where the shift sits).  Off a full plateau
     // a smaller shift passes for a ramp, and a real restart of charging comes with a step
     // anyway, so there the climb has to be clearer.
-    const float needed = (state_ == FULL) ? kChargeSlopeFromFull : kChargeSlope;
+    const float needed = (state_ == FULL || fullBlocked_) ? kChargeSlopeFromFull : kChargeSlope;
     const bool rising = slope_ >= needed && shiftTolerantSlope(n) >= 0.5f * needed;
     const bool falling = slope_ <= kDischargeSlope;
     const bool fallingHard = slope_ <= kHardFallSlope;
@@ -198,9 +313,11 @@ class ChargeDetector {
       // fall, so there only a hard one counts; lower down a gentle one is enough.
       state_ = DISCHARGING;
     }
-    // Flat at the top of the curve: a charger is holding the cell full.
-    if (flat && level >= kFullV) {
+    // Flat at the top of the curve: a charger is holding the cell full.  (Not while the slow history says the
+    // cell is falling: a light load makes that look flat in twelve minutes.)
+    if (flat && level >= kFullV && !fullBlocked_) {
       fullRef_ = (state_ == FULL) ? fullRef_ + 0.02f * (level - fullRef_) : level;  // follow the plateau slowly
+      if (state_ != FULL) fullSince_ = slowTotal_;
       state_ = FULL;
     }
   }
@@ -209,9 +326,10 @@ class ChargeDetector {
   // pulls one or two bins down, and this hides it from the trend without hiding a real shift
   // (which keeps every bin lower for good).
   float lifted(int i) const {
+    const int p1 = i >= 1 ? i - 1 : 0, p2 = i >= 2 ? i - 2 : 0;  // (the first bins have no earlier ones: they compare with themselves)
     float v = means_[i];
-    if (i >= 1 && means_[i - 1] > v) v = means_[i - 1];
-    if (i >= 2 && means_[i - 2] > v) v = means_[i - 2];
+    if (means_[p1] > v) v = means_[p1];
+    if (means_[p2] > v) v = means_[p2];
     return v;
   }
 
@@ -282,4 +400,13 @@ class ChargeDetector {
   float step_ = 0;     // volts
   float slope_ = 0;    // volts per minute
   float fullRef_ = 0;  // volts: where the plateau sits while FULL
+
+  static constexpr float kSlowMinutes = (float)kBinsPerSlow * (float)kBinMs / 60000.0f;  // 5: minutes per slow value
+  float slow_[kSlowBins] = {};  // volts, one level per five minutes, oldest first
+  int slowCount_ = 0;
+  uint32_t slowTotal_ = 0;      // slow values since the start (does not wrap around the 48 kept)
+  uint32_t fullSince_ = 0;      // slowTotal_ when FULL began
+  float slowAcc_[kBinsPerSlow] = {};  // the bins of the slow value being gathered
+  int slowAccN_ = 0;
+  bool fullBlocked_ = false;    // FULL ended; flat may not make it FULL again until the cell is charged or sat still
 };

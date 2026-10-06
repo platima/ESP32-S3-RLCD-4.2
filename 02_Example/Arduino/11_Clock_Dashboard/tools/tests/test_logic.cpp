@@ -424,6 +424,175 @@ static void testCharge() {
   unplugFromFull("unplugged when full, moderate fall (0.8 mV/min)", 0.0008, 30);
   unplugFromFull("unplugged when full, gentle fall (0.5 mV/min)", 0.0005, 45);
 
+  // A light load (the clock with its radio mostly off: 10..45 mA on a 2500 mAh cell) makes the top of the
+  // curve fall by 0.07..0.3 mV a minute, which twelve minutes cannot tell from flat: it sat on FULL for
+  // hours.  The slow history ends FULL when the level is 12 mV under its plateau, so how long that takes
+  // depends on the fall; and then it must stay ended however flat the last twelve minutes look.
+  unplugFromFull("unplugged when full, light load (0.3 mV/min)", 0.0003, 75);
+  unplugFromFull("unplugged when full, lighter load (0.12 mV/min)", 0.00012, 150);
+  unplugFromFull("unplugged when full, light load (0.07 mV/min)", 0.00007, 240);
+
+  {  // 200 sequences of a 0.3 mV/min fall: the older rules sometimes say discharging, then flat again, before the slow history has spoken
+    int bad = 0;
+    for (uint64_t seed = 1; seed <= 200; seed++) {
+      Sim s(seed + 1100);
+      s.run(25, [](double) { return 4.19; });
+      const double t0 = s.now();
+      auto f = [=](double m) { return 4.19 - 0.0003 * (m - t0); };
+      s.run(75, f);
+      s.clearSeen();
+      s.run(180, f);
+      bad += s.changes != 0 ? 1 : 0;  // 75 minutes after the unplug it must be settled on DISCHARGING for good
+    }
+    g_checks++;
+    if (bad > 0) {
+      g_failed++;
+      printf("  FAIL a 0.3 mV/min fall: the state still changed after 75 minutes in %d of 200 sequences\n", bad);
+    }
+  }
+
+  for (double rate : {0.0003, 0.00007}) {
+    char name[96];
+    snprintf(name, sizeof name, "after the fall is seen, FULL does not come back (%.2f mV/min)", rate * 1000);
+    forSeeds(name, [rate](uint64_t seed, Verdict &v) {
+      Sim s(seed);
+      s.run(25, [](double) { return 4.19; });
+      v.need(s.d.state() == S::FULL && !s.d.leftFull(), "not full on the charger, or falling already");
+      const double t0 = s.now();
+      auto f = [=](double m) { return 4.19 - rate * (m - t0); };
+      s.run(rate > 0.0001 ? 90 : 240, f);
+      v.need(s.d.state() == S::DISCHARGING, "not discharging in time");
+      v.need(s.d.leftFull(), "no sag found");
+      s.clearSeen();
+      s.run(360, f);  // six more hours of the same slow fall: the twelve minute trend says "flat" the whole time
+      v.need((s.seen & kClaimsPower) == 0, "called it full or charging again");
+      v.need(s.changes == 0, "flapped");
+      v.need(s.d.longSlopeMvPerMin() < -rate * 1000 * 0.5 && s.d.longSlopeMvPerMin() > -rate * 1000 * 1.5,
+             "the slow trend does not show the fall");
+    });
+  }
+
+  // What the charger itself does must not look like a discharge: its plateau wanders by a few millivolts,
+  // and the cell relaxes after the charger ends.
+  {  // 300 sequences: a plateau that wanders is the one case where a single lucky draw (the highest level) would show
+    int bad = 0, notFull = 0;
+    for (uint64_t seed = 1; seed <= 300; seed++) {
+      Sim s(seed + 500);
+      s.run(25, [](double) { return 4.19; });
+      if (s.d.state() != S::FULL) notFull++;
+      s.clearSeen();
+      double level = 0, next = 40;
+      s.run(480, [&](double m) {
+        if (m > next) {
+          level = (s.uniform() < 0.5 ? 1 : -1) * 0.004 * s.uniform();
+          next += 20 + 40 * s.uniform();
+        }
+        return 4.19 + level;
+      });
+      bad += (s.changes != 0 || s.d.leftFull()) ? 1 : 0;
+    }
+    g_checks += 2;
+    if (notFull) {
+      g_failed++;
+      printf("  FAIL held full with plateau steps: %d of 300 sequences were not full on the charger\n", notFull);
+    }
+    if (bad) {
+      g_failed++;
+      printf("  FAIL held full with plateau steps of up to 4 mV every 20-60 minutes for 8 hours: left FULL in %d of 300 sequences\n", bad);
+    }
+  }
+  // A dip of a few minutes (a cable knocked loose and pushed back) takes the cell down and it comes back.  The
+  // twelve minute trend or the slow history may call it a discharge for a while; FULL has to be back within
+  // 45 minutes, and it must never be called charging.  (What brings FULL back is the last hour of the slow
+  // history: a four minute dip hardly moves it, a fall does; the dip itself stays in the last twenty minutes.)
+  forSeeds("held full with a four minute dip of 13 mV every hour or so", [](uint64_t seed, Verdict &v) {
+    Sim s(seed + 550);
+    s.run(90, [](double) { return 4.19; });  // (in the first 80 minutes after boot there is not yet a slow history to bring FULL back)
+    v.need(s.d.state() == S::FULL, "not full on the charger");
+    s.clearSeen();
+    double dipAt = 20 + 50 * s.uniform();
+    int notFullMin = 0, longest = 0;
+    auto truth = [&](double m) {
+      if (m > dipAt + 4) dipAt = m + 40 + 50 * s.uniform();
+      return 4.19 - ((m >= dipAt && m < dipAt + 4) ? 0.013 : 0.0);
+    };
+    for (int minute = 0; minute < 480; minute++) {
+      s.run(1, truth);
+      notFullMin = s.d.state() == S::FULL ? 0 : notFullMin + 1;
+      if (notFullMin > longest) longest = notFullMin;
+    }
+    v.need((s.seen & bit(S::CHARGING)) == 0, "a dip was called charging");
+    v.need(longest <= 45, "FULL did not come back within 45 minutes of a dip");
+    v.need(s.d.state() == S::FULL, "not full at the end");
+  });
+  for (double tau : {15.0, 30.0}) {
+    char name[96];
+    snprintf(name, sizeof name, "held full after the charger ends, 8 mV tail (tau %.0f min)", tau);
+    forSeeds(name, [tau](uint64_t seed, Verdict &v) {
+      Sim s(seed + 600);
+      s.run(25, [tau](double m) { return 4.19 + 0.008 * exp(-m / tau); });
+      v.need(s.d.state() == S::FULL, "not full on the charger");
+      s.clearSeen();
+      s.run(480, [tau](double m) { return 4.19 + 0.008 * exp(-(m + 25) / tau); });
+      v.need(s.changes == 0, "left FULL");
+    });
+  }
+  forSeeds("on battery at -0.07 mV/min, light load: never full or charging", [](uint64_t seed, Verdict &v) {
+    Sim s(seed + 700);
+    s.run(480, [](double m) { return 3.95 - 0.00007 * m; });
+    v.need((s.seen & kClaimsPower) == 0, "called it full or charging");
+  });
+
+  // Once FULL has ended, the level stepping up by 12 mV (a glitch) and staying there is not a plug-in: off a
+  // plateau the climb has to be clearer to count as charging, and that stays so while FULL is blocked.  Run
+  // over 200 sequences, because a few cases of a glitch that lines up with the wander are unavoidable.
+  {
+    int bad = 0, setupFailed = 0;
+    for (uint64_t seed = 1; seed <= 200; seed++) {
+      Sim s(seed + 900);
+      s.run(25, [](double) { return 4.19; });
+      const double t0 = s.now();
+      s.run(150, [=](double m) { return 4.19 - 0.0003 * (m - t0); });
+      if (!(s.d.state() == S::DISCHARGING && s.d.leftFull())) {
+        setupFailed++;
+        continue;
+      }
+      const double low = 4.19 - 0.0003 * (s.now() - t0);
+      s.clearSeen();
+      s.run(60, [=](double) { return low + 0.012; });
+      bad += (s.seen & bit(S::CHARGING)) ? 1 : 0;
+    }
+    g_checks += 2;
+    if (setupFailed) {
+      g_failed++;
+      printf("  FAIL glitch after FULL ended: %d of 200 sequences were not discharging with FULL blocked\n", setupFailed);
+    }
+    if (bad > 4) {
+      g_failed++;
+      printf("  FAIL a 12 mV step up after FULL ended was called charging in %d of 200 sequences (at most 4)\n", bad);
+    }
+  }
+
+  // Plugged in again after the sag: charging is seen at once (a step) and, once the charger holds the cell,
+  // it is full again, with nothing of the sag left over.
+  forSeeds("plugged in again after a sag", [](uint64_t seed, Verdict &v) {
+    Sim s(seed + 800);
+    s.run(25, [](double) { return 4.19; });
+    const double t0 = s.now();
+    s.run(150, [=](double m) { return 4.19 - 0.0003 * (m - t0); });
+    v.need(s.d.state() == S::DISCHARGING && s.d.leftFull(), "no sag found before the plug-in");
+    const double t1 = s.now();
+    const double low = 4.19 - 0.0003 * (t1 - t0);
+    s.clearSeen();
+    s.run(60, [=](double m) {
+      const double x = low + 0.075 + 0.002 * (m - t1);  // the charger takes over: a step up, held at 4.2 V
+      return x > 4.2 ? 4.2 : x;
+    });
+    v.need(s.firstAt[S::CHARGING] >= 0 && s.firstAt[S::CHARGING] - t1 <= 3.0, "charging not shown within 3 minutes");
+    v.need(s.d.state() == S::FULL, "not full again an hour after the plug-in");
+    v.need(!s.d.leftFull(), "the sag was not forgotten");
+  });
+
   forSeeds("booted while charging (+2 mV/min)", [](uint64_t seed, Verdict &v) {
     Sim s(seed);
     s.run(17, [](double m) { return 3.90 + 0.002 * m; });
@@ -576,7 +745,9 @@ static void testCharge() {
     v.need(s.seen == bit(S::FULL), "a small level shift took it out of FULL");
   });
   // A bigger drop at the top of the curve is, to a voltage reading, a battery that has started
-  // supplying the load.  It may say so for a while; it must never say charging and must settle.
+  // supplying the load.  It may say so for a while (once it has, FULL waits until the last hour has not
+  // fallen, which is what keeps an unplugged cell from reading as full again); it must never say charging,
+  // and it must settle once the level has sat still.
   forSeeds("load rises by 15 mV while full on the charger", [](uint64_t seed, Verdict &v) {
     Sim s(seed);
     auto f = [](double m) { return 4.19 - (m > 30 ? 0.015 : 0.0); };
@@ -585,7 +756,9 @@ static void testCharge() {
     s.clearSeen();
     s.run(45, f);
     v.need((s.seen & bit(S::CHARGING)) == 0, "a drop was called charging");
-    v.need(s.d.state() == S::FULL, "did not settle back to FULL");
+    s.run(90, f);
+    v.need((s.seen & bit(S::CHARGING)) == 0, "a drop was called charging");
+    v.need(s.d.state() == S::FULL, "did not settle back to FULL two hours on");
   });
 
   {  // the battery being removed, or readings stopping, starts it afresh
