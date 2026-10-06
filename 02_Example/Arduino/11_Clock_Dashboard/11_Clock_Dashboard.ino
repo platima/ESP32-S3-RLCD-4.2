@@ -1128,7 +1128,8 @@ static bool usbHostAttached() {
 // computer is on the USB port, "console = off" at the end of start-up; console_policy.h).
 static void serviceConsole(uint32_t nowMs) {
   if (!g_consoleOn) return;
-  if (s_consoleWatch.shouldStop(g_cfg.console, s_consoleKeep, usbHostAttached(), nowMs)) {
+  // (with "console = on", or KEY held at start-up, the port is not even looked at: it runs as it always has)
+  if (g_cfg.console != CONSOLE_ON && !s_consoleKeep && s_consoleWatch.shouldStop(g_cfg.console, false, usbHostAttached(), nowMs)) {
     LOGF(TAG, "console = %s: shutting the console and the USB port down until the next restart (KEY held at start-up keeps them)",
          g_cfg.console == CONSOLE_AUTO ? "auto, and no computer on the USB port" : "off");
     consoleShutDown();

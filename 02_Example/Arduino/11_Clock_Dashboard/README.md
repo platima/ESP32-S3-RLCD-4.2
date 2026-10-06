@@ -628,9 +628,9 @@ says `asleep (sync mode), next in 9 min` while the radio is off. What is not kno
 costs (association, the TLS handshakes) and what the board draws with the radio off.
 
 Things to expect in this mode: the status bar says *Connecting to WiFi...* for a few seconds every quarter of an hour; the
-dashboard's Spotify strip shows the weather extras unless music is playing; the first KEY press after a quiet time answers a
-few seconds late; and the radio stack is started and stopped hundreds of times a day, so watch the *Uptime* line (it shows
-the free memory) for the first days.
+dashboard's Spotify strip is as old as the last session when nothing is playing (a paused track stays until a session
+finds it gone); the first KEY press after a quiet time answers a few seconds late; and the radio stack is started and
+stopped hundreds of times a day, so watch the *Uptime* line (it shows the free memory) for the first days.
 
 ### Music in sync mode
 

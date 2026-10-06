@@ -236,7 +236,7 @@ Reply tokenCall(const String &form) {
 bool storeTokens(const SpotifyTokenReply &t) {
   copyStr(s_accessToken, sizeof s_accessToken, t.accessToken);
   uint32_t life = t.expiresInSec > 120 ? (uint32_t)t.expiresInSec - 60 : 30;
-  s_accessValidUntilMs = millis() + life * 1000UL;
+  s_accessValidUntilMs = (millis() + life * 1000UL) | 1u;  // (never 0, which means "none")
   if (t.refreshToken[0] && strcmp(t.refreshToken, s_refreshToken) != 0) {
     // Spotify may rotate the refresh token; persist it before it is ever used.
     copyStr(s_refreshToken, sizeof s_refreshToken, t.refreshToken);
@@ -248,7 +248,8 @@ bool storeTokens(const SpotifyTokenReply &t) {
 
 // Returns true when s_accessToken is usable.
 bool ensureAccessToken() {
-  if (s_accessToken[0] && (int32_t)(s_accessValidUntilMs - millis()) > 0) return true;
+  // (0 is "no valid token" at every age of the clock: taken as a time it would look valid again after 24.8 days)
+  if (s_accessToken[0] && radioplan::pending(millis(), s_accessValidUntilMs)) return true;
   if (!s_refreshToken[0]) return false;
 
   char enc[400];
@@ -816,6 +817,7 @@ void spotifyTick() {
     }
     return;
   }
+  radioplan::keepDue(millis(), &s_nextPollMs);  // a poll that has been due for weeks (no network) stays due
   if ((int32_t)(millis() - s_nextPollMs) >= 0) pollPlayer();
 }
 
@@ -841,7 +843,7 @@ bool spotifyWantsRadio() {
 
 void spotifyWindowBegin() {
   s_peekDone = false;
-  s_nextPollMs = 0;  // look at the player as soon as the radio is up
+  s_nextPollMs = millis();  // look at the player as soon as the radio is up (now, not "0": that is a time too)
 }
 
 bool spotifyPeekPending() {
