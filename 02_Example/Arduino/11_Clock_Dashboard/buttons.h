@@ -25,6 +25,10 @@ class ClickDetector {
       : gapMs_(multiClickGapMs), longMs_(longPressMs), debounceMs_(debounceMs) {}
 
   ClickEvent update(bool pressed, uint32_t nowMs) {
+    // time does not run backwards (a level read just after an interrupt recorded a later change, see edge())
+    if (seen_ && (int32_t)(nowMs - lastMs_) < 0) nowMs = lastMs_;
+    seen_ = true;
+    lastMs_ = nowMs;
     // debounce: accept a level once it has been steady for debounceMs_
     if (pressed != raw_) {
       raw_ = pressed;
@@ -56,8 +60,19 @@ class ClickDetector {
     return CLICK_NONE;
   }
 
+  // A change of the level that happened at `atMs`, recorded by an interrupt while the loop was too busy to
+  // look (a slow frame at the idle clock): time passes with the level as it was, and then it changes.  So a
+  // tap that began and ended between two looks still counts, with its real length.
+  ClickEvent edge(bool pressed, uint32_t atMs) {
+    const ClickEvent before = update(raw_, atMs);
+    const ClickEvent after = update(pressed, atMs);
+    return before != CLICK_NONE ? before : after;
+  }
+
  private:
   uint32_t gapMs_, longMs_, debounceMs_;
+  bool seen_ = false;
+  uint32_t lastMs_ = 0;
   bool raw_ = false;
   bool stable_ = false;
   bool longFired_ = false;

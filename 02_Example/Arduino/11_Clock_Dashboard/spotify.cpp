@@ -73,7 +73,8 @@ uint32_t s_sampledMs = 0;
 uint32_t s_nextPollMs = 0;
 bool s_peekDone = false;                   // wifi_mode = sync: this radio session has looked at the player once
 uint32_t s_lastActiveMs = 0;               // when the player was last seen playing, or a command was sent
-volatile uint32_t s_pageHoldUntilMs = 0;   // the UI task shows the Now Playing page: the radio stays on until then
+volatile uint32_t s_pageHoldUntilMs = 0;   // the UI task shows the Now Playing page: the radio stays on until then (0 = not)
+uint32_t s_trackLookAtMs = 0;              // spotify_live = off: when the track on screen should be over, time for the next look (0 = none)
 int s_idlePolls = 0;
 int s_errorStreak = 0;
 int s_authFailures = 0;
@@ -101,8 +102,17 @@ bool timeTrusted() {
   return g_state.timeTrusted;
 }
 
+// Does the clock follow the player all the time while music plays?  Always, except in wifi_mode = sync with
+// spotify_live = off: there the radio goes off between looks and the clock looks again when the track on
+// screen should be over (spotifyLookDue()).
+bool followLive() { return !g_cfg.syncMode() || g_cfg.spotifyLive; }
+
 void publish() {
-  if (s_info.status == SPOTIFY_PLAYING) s_lastActiveMs = millis();
+  if (s_info.status == SPOTIFY_PLAYING) {
+    s_lastActiveMs = millis();
+  } else {
+    s_trackLookAtMs = 0;  // nothing is playing: nothing ends
+  }
   StateLock lock;
   g_state.spotify = s_info;
   g_state.spotifySampledMs = s_sampledMs;
@@ -356,6 +366,13 @@ void pollPlayer() {
       if (untilEnd < interval) interval = untilEnd < 1500 ? 1500 : untilEnd;
     }
     schedulePoll(interval);
+    // spotify_live = off: the radio may go off now, and the next look is due when this track should be over
+    // (at once if it already is; never for something with no length, which the look of every session follows)
+    if (s_info.status == SPOTIFY_PLAYING && s_info.durationMs > 0) {
+      s_trackLookAtMs = (millis() + radioplan::trackLookAfterMs(s_info.durationMs, s_info.progressMs)) | 1u;
+    } else {
+      s_trackLookAtMs = 0;
+    }
     return;
   }
 
@@ -804,16 +821,22 @@ void spotifyTick() {
 
 // ---- wifi_mode = sync: the radio comes and goes (net_task.cpp, radio_plan.h) ----------------------------
 void spotifySetPageShown(bool shown) {
-  if (shown) s_pageHoldUntilMs = millis() + kPageHoldMs;  // a minute from now (the next call, while it is shown, moves it on)
+  if (shown) s_pageHoldUntilMs = (millis() + kPageHoldMs) | 1u;  // a minute from now (the next call, while it is shown, moves it on)
 }
 
 bool spotifyWantsRadio() {
   if (!spotifyConfigured()) return false;
   const uint32_t now = millis();
-  if (s_queue && uxQueueMessagesWaiting(s_queue) > 0) return true;  // a command waits for the radio
-  if (s_info.status == SPOTIFY_PLAYING) return true;                // music is playing: keep the strip live
-  if (s_info.status == SPOTIFY_PAUSED && (uint32_t)(now - s_lastActiveMs) < kPausedHoldMs) return true;
-  return radioplan::demandActive(now, s_pageHoldUntilMs);           // the Now Playing page is open
+  // a time long past must not come round again when millis() wraps (the UI task sets a fresh one every
+  // time round its loop while the page is shown, so nothing is lost if it does so right now)
+  if (s_pageHoldUntilMs != 0 && !radioplan::pending(now, s_pageHoldUntilMs)) s_pageHoldUntilMs = 0;
+  radioplan::SpotifyNeeds n;
+  n.commandWaiting = s_queue && uxQueueMessagesWaiting(s_queue) > 0;
+  n.playing = s_info.status == SPOTIFY_PLAYING;
+  n.pausedRecently = s_info.status == SPOTIFY_PAUSED && (uint32_t)(now - s_lastActiveMs) < kPausedHoldMs;
+  n.pageOpen = radioplan::pending(now, s_pageHoldUntilMs);
+  n.live = followLive();
+  return radioplan::spotifyHolds(n);
 }
 
 void spotifyWindowBegin() {
@@ -825,9 +848,18 @@ bool spotifyPeekPending() {
   return spotifyConfigured() && s_linked && !s_peekDone && timeTrusted() && rateLimitRemaining() == 0;
 }
 
-// The radio is about to be switched off: let go of the connections, and do not leave a track on the screen
-// that nobody is following any more.
-void spotifyRadioDown() {
+// spotify_live = off: the track on screen should be over by now, so it is time for another look.
+bool spotifyLookDue() {
+  if (!spotifyConfigured() || !s_linked || followLive()) return false;
+  if (s_info.status != SPOTIFY_PLAYING || s_trackLookAtMs == 0) return false;
+  return radioplan::due(millis(), s_trackLookAtMs) && timeTrusted() && rateLimitRemaining() == 0;
+}
+
+// The radio is about to be switched off: let go of the connections.  `keepTrack`: the session ended as it
+// should, so what it saw last stays on the screen until the next look (a paused track; with spotify_live =
+// off also a playing one, its progress counted on by the clock).  Otherwise the network is gone, and a track
+// that nobody can follow any more is taken off.
+void spotifyRadioDown(bool keepTrack) {
   s_apiHttp.end();
   s_apiClient.stop();
   if (s_web) {
@@ -836,7 +868,7 @@ void spotifyRadioDown() {
     s_web = nullptr;
     MDNS.end();
   }
-  if (s_info.status == SPOTIFY_PLAYING || s_info.status == SPOTIFY_PAUSED) {
+  if (!keepTrack && (s_info.status == SPOTIFY_PLAYING || s_info.status == SPOTIFY_PAUSED)) {
     s_info.title[0] = s_info.artist[0] = s_info.album[0] = s_info.device[0] = 0;
     s_info.durationMs = s_info.progressMs = 0;
     s_info.status = SPOTIFY_IDLE;

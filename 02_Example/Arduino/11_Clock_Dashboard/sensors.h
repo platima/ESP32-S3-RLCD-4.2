@@ -35,3 +35,9 @@ BatteryReading readBattery();
 // been set or lost power (the chip's oscillator-stop flag).
 bool rtcReadUtc(time_t *utc);
 bool rtcWriteUtc(time_t utc);
+
+// The two audio chips on the same I2C bus, which the clock does not use (an ES8311 codec and an ES7210
+// microphone ADC): told to power down, with what Waveshare's audio example writes when it closes them.
+// Returns which of them answered.  Call it once, after sensorsBegin().
+enum : int { AUDIO_CODEC_ANSWERED = 1, AUDIO_MIC_ADC_ANSWERED = 2 };
+int audioChipsStandby();

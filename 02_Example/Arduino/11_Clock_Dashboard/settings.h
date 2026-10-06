@@ -30,7 +30,9 @@ enum BatteryMode : uint8_t { BATTERY_AUTO = 0, BATTERY_NONE };
 enum WifiSave : uint8_t { WIFISAVE_NORMAL = 0, WIFISAVE_MAX };
 enum WifiMode : uint8_t { WIFIMODE_ALWAYS = 0, WIFIMODE_SYNC };  // radio connected all the time, or only for the syncs (radio_plan.h)
 enum CpuSpeed : uint8_t { CPU_80 = 0, CPU_160, CPU_240 };
-enum CpuIdle : uint8_t { CPUIDLE_OFF = 0, CPUIDLE_80, CPUIDLE_40, CPUIDLE_20, CPUIDLE_10 };  // the clock while the radio is off
+enum CpuIdle : uint8_t { CPUIDLE_OFF = 0, CPUIDLE_80, CPUIDLE_40, CPUIDLE_20 };  // the clock while the radio is off
+// The USB serial console: always, only while a computer is on the USB port, or never (console_policy.h)
+enum ConsoleMode : uint8_t { CONSOLE_ON = 0, CONSOLE_AUTO, CONSOLE_OFF };
 
 struct Settings {
   // --- WiFi ---------------------------------------------------------------------
@@ -57,6 +59,7 @@ struct Settings {
   // --- Spotify ------------------------------------------------------------------
   bool spotify = true;
   char spotifyClientId[40] = "";
+  bool spotifyLive = true;  // wifi_mode = sync: the radio stays on while music plays; off = it looks once a track (untried on the board)
   // --- sensors and battery ------------------------------------------------------
   float indoorOffsetC = -4.0f;
   uint8_t battery = BATTERY_AUTO;
@@ -67,6 +70,7 @@ struct Settings {
   // --- power --------------------------------------------------------------------
   uint8_t cpuSpeed = CPU_80;
   uint8_t cpuIdle = CPUIDLE_OFF;  // the CPU clock while the radio is off; off = no change (untried on the board)
+  uint8_t console = CONSOLE_ON;   // the USB serial console; auto and off shut it down (untried on the board)
   // --- weather ------------------------------------------------------------------
   int32_t weatherIntervalMin = 15;
 
@@ -81,9 +85,11 @@ struct Settings {
   bool time12h() const { return timeFormat == TIME_12H; }
   bool hasLatLon() const { return latitude != 0 || longitude != 0; }
   int cpuMhz() const { return cpuSpeed == CPU_240 ? 240 : (cpuSpeed == CPU_160 ? 160 : 80); }
-  // The clock while the radio is off, or 0 for "the same as cpuMhz()".  Never above cpuMhz().
+  // The clock while the radio is off, or 0 for "the same as cpuMhz()".  Never above cpuMhz().  (40 MHz is the
+  // lowest clock Espressif gives figures for and 20 the lowest the Arduino core lists for this chip; 10 is left
+  // out: a frame would take a quarter of a second to draw, which leaves little of each second to save in.)
   int cpuIdleMhz() const {
-    const int mhz = cpuIdle == CPUIDLE_80 ? 80 : cpuIdle == CPUIDLE_40 ? 40 : cpuIdle == CPUIDLE_20 ? 20 : cpuIdle == CPUIDLE_10 ? 10 : 0;
+    const int mhz = cpuIdle == CPUIDLE_80 ? 80 : cpuIdle == CPUIDLE_40 ? 40 : cpuIdle == CPUIDLE_20 ? 20 : 0;
     return mhz > 0 && mhz < cpuMhz() ? mhz : 0;
   }
   bool syncMode() const { return wifi && wifiMode == WIFIMODE_SYNC; }

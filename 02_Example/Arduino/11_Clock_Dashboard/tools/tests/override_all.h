@@ -27,6 +27,7 @@
 #define TIMEZONE_POSIX_OVERRIDE "America/New_York"
 #define SPOTIFY_ENABLED 0
 #define SPOTIFY_CLIENT_ID "0123456789abcdef0123456789abcdef"
+#define SPOTIFY_LIVE 0
 #define INDOOR_TEMP_OFFSET_C (-2.5f)
 #define BATTERY_MODE "none"
 #define BATTERY_CAPACITY_MAH 2500
@@ -35,4 +36,5 @@
 #define BATTERY_CUTOFF_V 3.45f
 #define CPU_MHZ 160
 #define CPU_IDLE_MHZ 40
+#define CONSOLE_MODE "auto"
 #define WEATHER_INTERVAL_MIN 30

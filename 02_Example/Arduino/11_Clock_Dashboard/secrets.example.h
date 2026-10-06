@@ -55,8 +55,10 @@
 // #define APP_HOSTNAME "desk-clock"      // the clock's name on the network
 // #define NTP_SERVER "time.nist.gov"     // a time server to try first
 // #define CPU_MHZ 80                     // 80, 160 or 240
-// #define CPU_IDLE_MHZ 40                // the clock while the radio is off: 0 (= CPU_MHZ), 80, 40, 20 or 10 (untried: see config.h)
+// #define CPU_IDLE_MHZ 40                // the clock while the radio is off: 0 (= CPU_MHZ), 80, 40 or 20 (untried: see config.h)
+// #define CONSOLE_MODE "auto"            // the USB serial console: "on", "auto" (only while a computer is on the USB port) or "off" (README: Saving power)
 // #define SPOTIFY_ENABLED 0              // 0 = off, even with a Client ID
+// #define SPOTIFY_LIVE 0                 // with WIFI_MODE "sync": 0 = the radio sleeps while music plays, one look a track (1 = it stays on)
 
 // Other (optional)
 // #define INDOOR_TEMP_OFFSET_C (-4.0f)   // degrees C added to the indoor temperature

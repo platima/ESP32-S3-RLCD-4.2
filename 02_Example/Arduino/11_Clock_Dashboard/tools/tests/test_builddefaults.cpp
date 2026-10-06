@@ -113,12 +113,14 @@ void testMistakes() {
   const Settings b = buildDefaults(&rep);
   const Settings factory;
 
-  // the five bad ones stay as they were ...
+  // the seven bad ones stay as they were ...
   CHECK_STR(b.hostname, factory.hostname);
   CHECK(b.wifiPowerSave == WIFISAVE_NORMAL);
   CHECK(b.timeFormat == TIME_24H);
   CHECK_NEAR(b.batteryCutoffV, factory.batteryCutoffV, 1e-6);  // 2.0 V would ruin a LiPo
   CHECK(b.cpuMhz() == 80);
+  CHECK(b.cpuIdle == CPUIDLE_OFF && b.cpuIdleMhz() == 0);  // 10 MHz is not on offer
+  CHECK(b.console == CONSOLE_ON);
   // ... the good ones beside them count
   CHECK(b.dateFormat == DATE_D_MON_Y && !b.showWeek && b.batteryCapacityMah == 1800);
   CHECK_NEAR(b.latitude, -31.952240, 1e-6);  // coordinates keep their digits: about a metre
@@ -126,7 +128,7 @@ void testMistakes() {
   CHECK(b.userSet == 0);
 
   // and they are reported, by the name of the macro and with the reason; the first three are kept
-  CHECK(rep.problems == 5);
+  CHECK(rep.problems == 7);
   CHECK(rep.kept == BuildReport::kKept);
   const char *want[] = {"APP_HOSTNAME: ", "WIFI_POWER_SAVE: ", "TIME_FORMAT: "};
   for (int i = 0; i < 3; i++) {

@@ -1537,6 +1537,132 @@ static void testButtons() {
   CHECK(e == CLICK_1);
 }
 
+// A loop that is busy part of the time, as the UI loop is while it draws a frame: `busyMs` out of every second,
+// from `phaseMs` on, it does not look at the pin; otherwise every 5 ms.  With `edges` every change of the pin is
+// also recorded with its time, as the interrupt of button_edges.cpp does (16 places, the rest is dropped), and
+// the loop replays the record before it looks itself.  The pin is modelled to the millisecond.
+static std::vector<std::pair<uint32_t, ClickEvent>> runBusyButton(const std::vector<Press> &presses, uint32_t endMs, uint32_t busyMs,
+                                                                  uint32_t phaseMs, bool edges, uint32_t bounceMs = 0, uint32_t startMs = 0) {
+  ClickDetector d(320, 800, 25);
+  std::vector<std::pair<uint32_t, ClickEvent>> events;
+  struct Edge {
+    uint32_t at;
+    bool down;
+  };
+  std::vector<Edge> log;
+  auto level = [&](uint32_t t) {
+    bool down = false;
+    for (auto &p : presses) down |= (t >= p.down && t < p.up);
+    for (auto &p : presses) {  // contact chatter after each change: the level flips every millisecond
+      if ((t >= p.down && t < p.down + bounceMs) || (t >= p.up && t < p.up + bounceMs)) down = (t & 1) != 0;
+    }
+    return down;
+  };
+  bool last = false;
+  for (uint32_t t = 0; t <= endMs; t++) {
+    const bool now = level(t);
+    if (edges && now != last && log.size() < 15) log.push_back({startMs + t, now});  // (a ring of 16 holds 15)
+    last = now;
+    const uint32_t inSecond = (t + 1000 - phaseMs % 1000) % 1000;
+    if (t % 5 != 0 || inSecond < busyMs) continue;  // the loop is not looking
+    for (const Edge &ed : log) {
+      const ClickEvent e = d.edge(ed.down, ed.at);
+      if (e != CLICK_NONE) events.push_back({t, e});
+    }
+    log.clear();
+    // (with the record, the loop's own look is one more change at "now": if the record was full and the end
+    // of a press is missing from it, the press still gets the time it lasted)
+    const ClickEvent e = edges ? d.edge(now, startMs + t) : d.update(now, startMs + t);
+    if (e != CLICK_NONE) events.push_back({t, e});
+  }
+  return events;
+}
+
+static void testButtonEdges() {
+  section("buttons: a loop that is busy drawing");
+  // A 100 ms tap that begins and ends inside a 120 ms frame (20 MHz): a loop that only looks never sees it ...
+  CHECK(runBusyButton({{1010, 1110}}, 3000, 120, 0, false).empty());
+  // ... and with the changes recorded it counts, as one click, reported once the gap after it has passed
+  {
+    const auto got = runBusyButton({{1010, 1110}}, 3000, 120, 0, true);
+    CHECK(got.size() == 1 && got[0].second == CLICK_1);
+    CHECK(got.size() == 1 && got[0].first >= 1110 + 320 && got[0].first <= 1110 + 320 + 130);
+  }
+  // Taps of 40 to 150 ms at every moment of the second, frames of 60, 120 and 240 ms: none is lost with the
+  // record, and without it some are (which is what the record is for: the check of the check)
+  for (uint32_t busy : {60u, 120u, 240u}) {
+    int lostPlain = 0, lostEdges = 0, wrong = 0, taps = 0;
+    for (uint32_t len : {40u, 60u, 100u, 150u}) {
+      for (uint32_t start = 1000; start < 2000; start += 7) {
+        taps++;
+        const auto plain = runBusyButton({{start, start + len}}, start + 1500, busy, 0, false);
+        const auto withEdges = runBusyButton({{start, start + len}}, start + 1500, busy, 0, true);
+        if (plain.empty()) lostPlain++;
+        if (withEdges.empty()) lostEdges++;
+        if (withEdges.size() > 1 || (withEdges.size() == 1 && withEdges[0].second != CLICK_1)) wrong++;
+        if (plain.size() > 1 || (plain.size() == 1 && plain[0].second != CLICK_1)) wrong++;
+      }
+    }
+    printf("  (frames of %u ms: %d of %d taps lost by looking alone, %d with the changes recorded)\n", (unsigned)busy, lostPlain, taps, lostEdges);
+    CHECK(lostEdges == 0 && wrong == 0);
+    CHECK(lostPlain > 0);
+  }
+  // two and three clicks, with a frame somewhere in them, at every phase
+  {
+    int wrong = 0, runs = 0;
+    for (uint32_t phase = 0; phase < 1000; phase += 13) {
+      runs += 2;
+      const auto two = runBusyButton({{1000, 1070}, {1170, 1240}}, 3000, 120, phase, true);
+      const auto three = runBusyButton({{1000, 1070}, {1170, 1240}, {1340, 1410}}, 3000, 120, phase, true);
+      if (two.size() != 1 || two[0].second != CLICK_2) wrong++;
+      if (three.size() != 1 || three[0].second != CLICK_3) wrong++;
+    }
+    if (wrong) printf("  %d of %d multi-clicks came out wrong\n", wrong, runs);
+    CHECK(wrong == 0);
+  }
+  // a long press is one long press, whenever the frames fall
+  {
+    int wrong = 0;
+    for (uint32_t phase = 0; phase < 1000; phase += 37) {
+      const auto lng = runBusyButton({{1000, 2400}}, 4000, 240, phase, true);
+      if (lng.size() != 1 || lng[0].second != CLICK_LONG) wrong++;
+    }
+    CHECK(wrong == 0);
+  }
+  // contact chatter: still one click, also when the chatter fills the record (12 ms of it at each end is 24 changes)
+  {
+    int wrong = 0;
+    for (uint32_t phase = 0; phase < 1000; phase += 37) {
+      const auto bouncy = runBusyButton({{1000, 1100}}, 3000, 120, phase, true, 6);
+      const auto storm = runBusyButton({{1000, 1100}}, 3000, 240, phase, true, 12);
+      if (bouncy.size() != 1 || bouncy[0].second != CLICK_1) wrong++;
+      if (storm.size() != 1 || storm[0].second != CLICK_1) wrong++;  // (the record overflows: still the one click, no phantom)
+    }
+    if (wrong) printf("  %d runs with contact chatter came out wrong\n", wrong);
+    CHECK(wrong == 0);
+  }
+  // a glitch shorter than the debounce time stays a glitch, recorded or not
+  CHECK(runBusyButton({{1010, 1020}}, 3000, 120, 0, true).empty());
+  CHECK(runBusyButton({{1500, 1512}}, 3000, 120, 0, true).empty());
+  // across the wrap of millis()
+  {
+    const auto got = runBusyButton({{1010, 1110}}, 3000, 120, 0, true, 0, 0xFFFFFA00u);  // the tap straddles 2^32
+    CHECK(got.size() == 1 && got[0].second == CLICK_1);
+  }
+  // time never runs backwards for the detector: a look stamped earlier than a change already replayed (the
+  // loop took its time before the interrupt came) is taken as "now", so nothing is accepted undebounced
+  {
+    ClickDetector det(320, 800, 25);
+    CHECK(det.update(false, 1000) == CLICK_NONE);
+    CHECK(det.edge(true, 1010) == CLICK_NONE);      // pressed at 1010 ...
+    CHECK(det.update(true, 1005) == CLICK_NONE);    // ... and a look that says 1005: still 0 ms of "pressed"
+    CHECK(det.edge(false, 1020) == CLICK_NONE);     // released after 10 ms: a glitch
+    ClickEvent e = CLICK_NONE;
+    for (uint32_t t = 1025; t < 2000 && e == CLICK_NONE; t += 5) e = det.update(false, t);
+    CHECK(e == CLICK_NONE);
+  }
+}
+
 int main() {
   testCalendar();
   testTimeZones();
@@ -1549,6 +1675,7 @@ int main() {
   testUtil();
   testLinkPage();
   testButtons();
+  testButtonEdges();
   printf("\n%d checks, %d failed\n", g_checks, g_failed);
   return g_failed ? 1 : 0;
 }

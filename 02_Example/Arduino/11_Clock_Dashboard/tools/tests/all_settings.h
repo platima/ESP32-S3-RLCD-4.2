@@ -25,6 +25,7 @@
     "timezone = America/New_York\n"
     "spotify = off\n"
     "spotify_client_id = 0123456789abcdef0123456789abcdef\n"
+    "spotify_live = off\n"
     "indoor_offset = -2.5\n"
     "battery = none\n"
     "battery_capacity_mah = 2500\n"
@@ -33,4 +34,5 @@
     "battery_cutoff_v = 3.45\n"
     "cpu_mhz = 160\n"
     "cpu_idle_mhz = 40\n"
+    "console = auto\n"
     "weather_interval_min = 30\n";

@@ -56,6 +56,34 @@ bool readIndoor(IndoorReading &out) {
 }
 
 // ---------------------------------------------------------------------------
+// The audio chips, which the clock does not use
+// ---------------------------------------------------------------------------
+static bool writeRegisters(uint8_t address, const uint8_t (*pairs)[2], size_t count) {
+  for (size_t i = 0; i < count; i++) {
+    Wire.beginTransmission(address);
+    Wire.write(pairs[i][0]);
+    Wire.write(pairs[i][1]);
+    if (Wire.endTransmission() != 0) return false;
+  }
+  return true;
+}
+
+int audioChipsStandby() {
+  // Register and value, in the order of es8311_suspend() and es7210_stop() in Waveshare's audio example for
+  // this board (07_Audio_Test/src/ExternLib/esp_codec_dev/device/...): what that library writes when it
+  // closes the chips.  Volumes to zero, the analog parts and the microphone bias off, the clocks off.
+  static const uint8_t kEs8311[][2] = {{0x32, 0x00}, {0x17, 0x00}, {0x0E, 0xFF}, {0x12, 0x02}, {0x14, 0x00},
+                                       {0x0D, 0xFA}, {0x15, 0x00}, {0x02, 0x10}, {0x00, 0x00}, {0x00, 0x1F},
+                                       {0x01, 0x30}, {0x01, 0x00}, {0x45, 0x00}, {0x0D, 0xFC}, {0x02, 0x00}};
+  static const uint8_t kEs7210[][2] = {{0x47, 0xFF}, {0x48, 0xFF}, {0x49, 0xFF}, {0x4A, 0xFF}, {0x4B, 0xFF},
+                                       {0x4C, 0xFF}, {0x40, 0xC0}, {0x01, 0x7F}, {0x06, 0x07}};
+  int answered = 0;
+  if (writeRegisters(I2C_ADDR_ES8311, kEs8311, sizeof kEs8311 / sizeof kEs8311[0])) answered |= AUDIO_CODEC_ANSWERED;
+  if (writeRegisters(I2C_ADDR_ES7210, kEs7210, sizeof kEs7210 / sizeof kEs7210[0])) answered |= AUDIO_MIC_ADC_ANSWERED;
+  return answered;
+}
+
+// ---------------------------------------------------------------------------
 // Battery
 // ---------------------------------------------------------------------------
 BatteryReading readBattery() {

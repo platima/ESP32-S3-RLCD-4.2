@@ -1,7 +1,28 @@
 #pragma once
 
 // Minimal serial logging: LOGF("tag", "format %d", value)
+//
+// The console can be shut down for good ("console = auto" or "off", console_policy.h): from then on LOGF
+// prints nothing.  Any task may log, and the port must not be taken away under a task that is in the middle
+// of a line, so every line is bracketed by logBegin() / logEnd() and the shutdown waits for the last one.
 
 #include <Arduino.h>
 
-#define LOGF(tag, fmt, ...) Serial.printf("[%8lu] %-8s " fmt "\n", (unsigned long)millis(), tag, ##__VA_ARGS__)
+// False once the console was shut down.  Code that talks to Serial directly (the commands) checks it.
+extern volatile bool g_consoleOn;
+
+bool logBegin();  // true: go ahead and print, then call logEnd()
+void logEnd();
+
+// Shuts the console down until the next restart: nothing more is printed, the serial driver is stopped (its
+// interrupt and buffers freed) and, when Serial is the chip's USB port, the USB transceiver with its pull-up
+// is switched off, so a computer no longer sees the clock.  Call it from the UI task.
+void consoleShutDown();
+
+#define LOGF(tag, fmt, ...)                                                                        \
+  do {                                                                                             \
+    if (logBegin()) {                                                                              \
+      Serial.printf("[%8lu] %-8s " fmt "\n", (unsigned long)millis(), tag, ##__VA_ARGS__);       \
+      logEnd();                                                                                    \
+    }                                                                                              \
+  } while (0)

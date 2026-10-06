@@ -24,5 +24,10 @@ void netRequestWeatherRefresh();
 // holds it for 45 seconds.  Does nothing in always mode.  Any task may call it.
 void netWake();
 
+// wifi_mode = sync: someone is using the clock (any button).  If it found none of its networks last time it
+// looks again now rather than at the next look, so a hotspot that was just switched on is picked up at once.
+// Does nothing when the clock has a network, or in always mode.  Any task may call it.
+void netNudge();
+
 // True while the radio is on or about to be: the CPU clock must not go below 80 MHz then (clock_policy.h).
 bool netRadioNeedsFastClock();

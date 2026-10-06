@@ -7,6 +7,7 @@
 #include <esp_sleep.h>
 #include <soc/gpio_sig_map.h>
 
+#include "button_edges.h"
 #include "config.h"
 #include "fw_update.h"
 #include "log.h"
@@ -27,7 +28,7 @@ struct Pad {
   int pin;
   int level;
 };
-const Pad kPads[] = {{PIN_LCD_CS, 1}, {PIN_LCD_RST, 1}, {PIN_LCD_DC, 1}, {PIN_LCD_SCK, 0}, {PIN_LCD_MOSI, 0}, {46, 0}};
+const Pad kPads[] = {{PIN_LCD_CS, 1}, {PIN_LCD_RST, 1}, {PIN_LCD_DC, 1}, {PIN_LCD_SCK, 0}, {PIN_LCD_MOSI, 0}, {PIN_AUDIO_AMP, 0}};
 
 // Output at a fixed level.  The IDF calls rather than Arduino's pinMode(): once the SPI bus owns
 // a pad, pinMode() detaches it from the bus, which takes the bus lock that the display driver
@@ -54,6 +55,13 @@ void powerAfterWake() {
   if (esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_UNDEFINED) rtc_gpio_deinit((gpio_num_t)PIN_KEY);
 }
 
+void powerQuietAudioPins() {
+  // The clock never starts I2S, so the lines that go out to the audio chips would float, and an input that
+  // floats can draw current.  The chip's own pull-downs give them a level: weak, so nothing fights if a
+  // chip should drive a line after all.
+  for (int pin : {PIN_I2S_MCLK, PIN_I2S_BCLK, PIN_I2S_WS, PIN_I2S_DOUT}) pinMode(pin, INPUT_PULLDOWN);
+}
+
 bool powerWokeFromTimer() { return esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER; }
 
 bool powerWasLowShutdown() { return s_lowShutdown == kLowMagic; }
@@ -63,6 +71,7 @@ void powerForgetLowShutdown() { s_lowShutdown = 0; }
 [[noreturn]] void powerDeepSleep(bool markLowShutdown) {
   fwConfirmNow();  // a firmware that puts itself to sleep on purpose has started properly; the next reset is no failure
   g_powerDown = true;
+  buttonEdgesEnd();  // KEY becomes a wake-up pin below
   if (markLowShutdown) s_lowShutdown = kLowMagic;
   delay(50);  // a WiFi call the network task is in the middle of gets a moment to finish
   WiFi.disconnect(true, false);

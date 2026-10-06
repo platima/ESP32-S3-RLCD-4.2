@@ -28,11 +28,13 @@
 #include "app_settings.h"
 #include "app_state.h"
 #include "battery_est.h"
+#include "button_edges.h"
 #include "buttons.h"
 #include "calc.h"
 #include "charge.h"
 #include "clock_policy.h"
 #include "config.h"
+#include "console_policy.h"
 #include "frame_plan.h"
 #include "fw_update.h"
 #include "log.h"
@@ -69,10 +71,19 @@ static FramePlanner s_planner(DISPLAY_LATENCY_MS * 1000);
 static uint32_t s_lastFrameMs = 0;
 
 // The CPU clock (clock_policy.h): fast while the radio, a computer on the USB port or a button needs it
-static uint32_t s_pokeUntilMs = 0;        // a button was pressed: stay fast until then
+static uint32_t s_pokeUntilMs = 0;        // a button was pressed: stay fast until then (0 = no)
 static uint32_t s_clockSwitches = 0;      // how often the clock was changed (shown by the "power" console command)
 static const char *s_clockReason = "";    // why the clock is where it is, for the Power page
+static int s_clockRefusedMhz = 0;         // a clock the core would not set: not asked for again
 static bool usbHostAttached();            // (defined with the clock code further down)
+
+// The USB serial console (console_policy.h, log.h)
+static_assert((int)CONSOLE_ON == (int)consolepolicy::ON && (int)CONSOLE_AUTO == (int)consolepolicy::AUTO &&
+                  (int)CONSOLE_OFF == (int)consolepolicy::OFF,
+              "the console setting and its policy use the same numbers");
+static consolepolicy::Watch s_consoleWatch;
+static bool s_consoleKeep = false;        // KEY was held at start-up: the console stays on for this run
+static int s_audioStandby = -1;           // which audio chips took the power-down (sensors.h), -1 = not asked
 
 // How well the frames kept time, shown on the Info page
 struct TimingStats {
@@ -123,9 +134,11 @@ static void applyPolarity() {
 // KEY: Spotify transport.  The toast appears immediately; the network task does
 // the work and may replace the toast if Spotify refuses.
 static void handleKey(ClickEvent e) {
+  // wifi_mode = sync: the radio comes on for any press of KEY (a few seconds before it is answered), also
+  // when Spotify is not set up: it is the way to say "look for the network now"
+  netWake();
   if (e == CLICK_LONG) {  // refreshes the weather too, so it works without Spotify
     showToast("Refreshing...", TOAST_NONE, 1500);
-    netWake();
     spotifyPost(SPOTIFY_CMD_REFRESH);
     netRequestWeatherRefresh();
     return;
@@ -143,7 +156,6 @@ static void handleKey(ClickEvent e) {
     showToast("Link Spotify first", TOAST_WARN);
     return;
   }
-  netWake();  // wifi_mode = sync: the radio comes on for this (a few seconds before it is answered)
   switch (e) {
     case CLICK_1:
       if (st == SPOTIFY_PLAYING) {
@@ -168,6 +180,7 @@ static void handleKey(ClickEvent e) {
 
 // BOOT: pages and screen polarity.
 static void handleBoot(ClickEvent e) {
+  netNudge();  // wifi_mode = sync: someone is here, so a clock that found none of its networks looks again now
   switch (e) {
     case CLICK_1:
       s_page = (UiPage)((s_page + 1) % PAGE_COUNT);
@@ -191,9 +204,31 @@ static void handleBoot(ClickEvent e) {
 }
 
 static void pollButtons(uint32_t nowMs) {
-  ClickEvent k = s_key.update(digitalRead(PIN_KEY) == LOW, nowMs);
-  ClickEvent b = s_boot.update(digitalRead(PIN_BOOT) == LOW, nowMs);
-  if (k != CLICK_NONE || b != CLICK_NONE) s_pokeUntilMs = (nowMs + clockpolicy::kPokeMs) | 1u;  // draw the answer at the working clock
+  bool active = false;
+  if (buttonEdgesOn()) {
+    // With an idle clock: what the interrupts recorded while the loop was busy drawing, replayed in order,
+    // so that a tap which began and ended inside a slow frame still counts (button_edges.h).
+    bool down;
+    uint32_t at;
+    while (buttonEdgeTake(BUTTON_KEY, &down, &at)) {
+      active = true;
+      const ClickEvent e = s_key.edge(down, at);
+      if (e != CLICK_NONE) handleKey(e);
+    }
+    while (buttonEdgeTake(BUTTON_BOOT, &down, &at)) {
+      active = true;
+      const ClickEvent e = s_boot.edge(down, at);
+      if (e != CLICK_NONE) handleBoot(e);
+    }
+    nowMs = millis();  // not earlier than what was just replayed
+  }
+  const bool keyDown = digitalRead(PIN_KEY) == LOW, bootDown = digitalRead(PIN_BOOT) == LOW;
+  // (with the record, the loop's own look is one more change at "now": should the record have been full and
+  // the end of a press be missing from it, the press still gets the time it lasted)
+  ClickEvent k = buttonEdgesOn() ? s_key.edge(keyDown, nowMs) : s_key.update(keyDown, nowMs);
+  ClickEvent b = buttonEdgesOn() ? s_boot.edge(bootDown, nowMs) : s_boot.update(bootDown, nowMs);
+  // a button is down, or was a moment ago: the answer is drawn at the working clock (cpu_idle_mhz)
+  if (active || keyDown || bootDown || k != CLICK_NONE || b != CLICK_NONE) s_pokeUntilMs = (nowMs + clockpolicy::kPokeMs) | 1u;
   if (k != CLICK_NONE) handleKey(k);
   if (b != CLICK_NONE) handleBoot(b);
 }
@@ -274,10 +309,12 @@ static void readSlowSensors(uint32_t nowMs) {
       s_est.reset();
       s_estState = s_chargeState;
     }
-    if (s_batHave && s_chargeState == CHARGE_DISCHARGING) s_est.add(nowMs / 1000, b.volts);
+    // seconds since start from the 64-bit timer: millis() / 1000 would jump back to 0 after 49.7 days
+    const uint32_t nowSec = (uint32_t)(esp_timer_get_time() / 1000000);
+    if (s_batHave && s_chargeState == CHARGE_DISCHARGING) s_est.add(nowSec, b.volts);
 
     // the cut-off: a minute under it, while not charging (low_battery.h)
-    if (s_batHave && s_guard.feed(nowMs / 1000, b.volts, s_chargeState != CHARGE_CHARGING && s_chargeState != CHARGE_FULL)) {
+    if (s_batHave && s_guard.feed(nowSec, b.volts, s_chargeState != CHARGE_CHARGING && s_chargeState != CHARGE_FULL)) {
       shutdownForLowBattery(b.volts);
     }
 
@@ -410,10 +447,19 @@ static void buildInfoSystem(UiModel &m, const SharedState &s, uint32_t nowMs, ti
     snprintf(v, sizeof v, "off (wifi = off in the settings)");
   } else if (s.wifiUp) {
     snprintf(v, sizeof v, "%s%s  %d dBm", s.ssid, s.wifiBackup ? " (backup)" : "", s.rssi);
-  } else if (s.radioSync && s.radioAsleep) {  // wifi_mode = sync, between two sessions
+  } else if (s.radioSync && (s.radioAsleep || s.radioTrouble == RADIO_AWAY)) {  // wifi_mode = sync, between two sessions
     char in[16];
     formatIn(s.radioWakeInSec, in, sizeof in);
-    snprintf(v, sizeof v, "asleep (sync mode)%s%s", s.radioWakeInSec >= 0 ? ", next in " : "", s.radioWakeInSec >= 0 ? in : "");
+    const bool when = s.radioAsleep && s.radioWakeInSec >= 0;
+    if (s.radioTrouble == RADIO_AWAY && !s.radioAsleep) {
+      snprintf(v, sizeof v, "none in range, looking now");
+    } else if (s.radioTrouble == RADIO_AWAY) {  // none of its networks answered: it looks every few minutes, and now if a button is pressed
+      snprintf(v, sizeof v, "none in range%s%s", when ? ", looking again in " : "", when ? in : "");
+    } else if (s.radioTrouble == RADIO_CANNOT_JOIN) {  // a network is there and will not let the clock in
+      snprintf(v, sizeof v, "cannot join%s%s", when ? ", next try in " : "", when ? in : "");
+    } else {
+      snprintf(v, sizeof v, "asleep (sync mode)%s%s", when ? ", next in " : "", when ? in : "");
+    }
   } else {
     snprintf(v, sizeof v, "not connected");
   }
@@ -537,6 +583,13 @@ static void buildInfoPower(UiModel &m, const SharedState &s) {
     add("Radio", v);
   }
   if (psramFound()) add("PSRAM", "ON: wastes power (Tools > PSRAM)");
+  if (!g_consoleOn) {  // (a line holds 42 characters of value)
+    add("Console", "off: restart with KEY held to get it back");
+  } else if (s_consoleKeep && g_cfg.console != CONSOLE_ON) {
+    add("Console", "kept on for this run (KEY was held)");
+  } else if (g_cfg.console == CONSOLE_AUTO) {
+    add("Console", "on while a computer is on the USB port");
+  }
 
   if (s_batHave) {
     if (fabsf(g_cfg.batteryCalibration - 1.0f) > 0.0005f) {  // say so when the voltage has been corrected
@@ -837,13 +890,49 @@ static void calibrateBattery(const char *arg) {
   s_est.reset();
 }
 
+// "set name = value": one setting, checked like a line of the SD card file, saved to flash, then a restart
+// (most settings are read once at start-up).  "set name =" forgets it, so the built-in default is back.  It
+// is also the way back from "console = off" without an SD card: restart with KEY held, then "set console = on".
+static void setFromConsole(const char *arg) {
+  while (*arg == ' ') arg++;
+  char key[48];
+  size_t n = 0;
+  while (arg[n] && arg[n] != '=' && arg[n] != ':' && n + 1 < sizeof key) {
+    key[n] = arg[n];
+    n++;
+  }
+  key[n] = 0;
+  if (!key[0] || (arg[n] != '=' && arg[n] != ':')) {
+    Serial.println("usage:  set name = value     (the names are those of the SD card file, see \"config\";  set name =  forgets one)");
+    return;
+  }
+  char err[96] = "";
+  const ApplyResult r = applySetting(g_cfg, cfgBuildDefaults(), key, arg + n + 1, err, sizeof err);
+  if (r == ApplyResult::UnknownKey || r == ApplyResult::BadValue) {
+    Serial.printf("not set: %s\n", err);
+    return;
+  }
+  if (r == ApplyResult::Unchanged) {
+    Serial.println("that is what it is already: nothing changed");
+    return;
+  }
+  if (!cfgSaveToFlash()) {
+    Serial.println("could NOT save it to flash: it holds until the next restart only");
+    return;
+  }
+  Serial.println(r == ApplyResult::Cleared ? "forgotten: the built-in default is back; restarting ..." : "saved to flash; restarting ...");
+  delay(300);
+  fwConfirmNow();  // a restart you asked for is no failure of a new firmware
+  ESP.restart();
+}
+
 // ---------------------------------------------------------------------------
 // Serial console (handy while developing): type "help"
 // ---------------------------------------------------------------------------
 static void serviceSerial() {
-  static char buf[32];
+  static char buf[200];  // (a "set" line with the longest name and value fits)
   static size_t len = 0;
-  while (Serial.available()) {
+  while (Serial.available() > 0) {
     char c = (char)Serial.read();
     if (c == '\r' || c == '\n') {
       buf[len] = 0;
@@ -852,6 +941,8 @@ static void serviceSerial() {
       if (!strcmp(buf, "reboot")) {
         fwConfirmNow();  // a restart you asked for is no failure of a new firmware
         ESP.restart();
+      } else if (!strncmp(buf, "set ", 4)) {
+        setFromConsole(buf + 4);
       } else if (!strncmp(buf, "batcal", 6)) {
         calibrateBattery(buf + 6);
       } else if (!strcmp(buf, "fw")) {
@@ -904,9 +995,17 @@ static void serviceSerial() {
         Serial.printf("cpu %u MHz (working %d, idle %d: %s), %u clock changes; USB host %s, radio %s\n", (unsigned)getCpuFrequencyMhz(),
                       g_cfg.cpuMhz(), g_cfg.cpuIdleMhz(), g_cfg.cpuIdleMhz() > 0 ? (s_clockReason[0] ? s_clockReason : "-") : "no idle clock",
                       (unsigned)s_clockSwitches, usbHostAttached() ? "attached" : "no", netRadioNeedsFastClock() ? "needs the fast clock" : "off or idle");
-        Serial.printf("wifi_mode %s%s: radio on %.1f %% of the time since start, %u sessions, next in %d s; frames draw %u us, send %u us\n",
+        Serial.printf("wifi_mode %s%s: radio on %.1f %% of the time since start, %u sessions, next in %d s%s; frames draw %u us, send %u us\n",
                       g_cfg.syncMode() ? "sync" : "always", g_cfg.wifi ? "" : " (wifi off)", s.radioOnPermille / 10.0,
-                      (unsigned)s.radioSessions, (int)s.radioWakeInSec, (unsigned)s_planner.drawCostUs(), (unsigned)s_planner.sendCostUs());
+                      (unsigned)s.radioSessions, (int)s.radioWakeInSec,
+                      s.radioTrouble == RADIO_AWAY ? " (none of the networks in range)" : (s.radioTrouble == RADIO_CANNOT_JOIN ? " (cannot join)" : ""),
+                      (unsigned)s_planner.drawCostUs(), (unsigned)s_planner.sendCostUs());
+        Serial.printf("console %s%s; buttons %s; audio chips: %s\n",
+                      g_cfg.console == CONSOLE_ON ? "on" : (g_cfg.console == CONSOLE_AUTO ? "auto" : "off"),
+                      s_consoleKeep ? " (kept on for this run: KEY was held at start-up)" : "",
+                      buttonEdgesOn() ? "read by interrupt as well (idle clock)" : "read by the loop",
+                      s_audioStandby < 0 ? "left alone (AUDIO_CHIPS_STANDBY 0)"
+                                         : (s_audioStandby == (AUDIO_CODEC_ANSWERED | AUDIO_MIC_ADC_ANSWERED) ? "both powered down" : "not both answered (see the start of the log)"));
       } else if (!strcmp(buf, "battery")) {
         char est[64];
         estimateText(est, sizeof est);
@@ -925,7 +1024,7 @@ static void serviceSerial() {
         Serial.printf("wifi=%d rssi=%d ip=%s synced=%d zone=%s status='%s' spotify=%d '%s'\n", s.wifiUp, s.rssi,
                       s.ip, s.ntpSynced, s.tzPosix, s.status, (int)s.spotify.status, s.spotify.message);
       } else {
-        Serial.println("commands: status | battery | batcal V | power | config | timing | fw | rollback | fwforget | refresh | page N | invert | unlink | sleeptest | reboot");
+        Serial.println("commands: status | battery | batcal V | power | config | set name = value | timing | fw | rollback | fwforget | refresh | page N | invert | unlink | sleeptest | reboot");
       }
     } else if (len < sizeof buf - 1) {
       buf[len++] = c;
@@ -998,11 +1097,17 @@ static void lowBatteryGate() {
 // so the frame planner is told (the first frame after the switch is planned with the new costs).
 static void applyClock(int mhz) {
   const int from = (int)getCpuFrequencyMhz();
-  if (from == mhz) return;
+  if (from == mhz || mhz == s_clockRefusedMhz) return;
   if (s_lcd) s_lcd->busRelease();
   powerSetCpuMhz(mhz);
   if (s_lcd) s_lcd->busAcquire();
-  s_planner.clockChanged((uint32_t)from, (uint32_t)mhz);
+  const int now = (int)getCpuFrequencyMhz();  // what it is now: the core refuses a clock it cannot make
+  if (now == from) {
+    s_clockRefusedMhz = mhz;  // (asked once: the loop would otherwise try again every few milliseconds)
+    LOGF(TAG, "the CPU clock stays at %d MHz: %d MHz was refused", from, mhz);
+    return;
+  }
+  s_planner.clockChanged((uint32_t)from, (uint32_t)now);
   s_clockSwitches++;
 }
 
@@ -1010,16 +1115,31 @@ static void applyClock(int mhz) {
 static void applyCpuSetting() { applyClock(g_cfg.cpuMhz()); }
 
 // Is a computer on the USB port?  (Below 80 MHz the USB console may stop, which would look like a crash.)
+// Always "no" once the console was shut down: the USB transceiver is off then, and there is no console to keep.
 static bool usbHostAttached() {
 #if ARDUINO_USB_CDC_ON_BOOT && ARDUINO_USB_MODE
-  return HWCDC::isPlugged();
+  return g_consoleOn && HWCDC::isPlugged();
 #else
   return false;
 #endif
 }
 
+// The console: its commands while it runs, and the moment it is shut down for good ("console = auto" when no
+// computer is on the USB port, "console = off" at the end of start-up; console_policy.h).
+static void serviceConsole(uint32_t nowMs) {
+  if (!g_consoleOn) return;
+  if (s_consoleWatch.shouldStop(g_cfg.console, s_consoleKeep, usbHostAttached(), nowMs)) {
+    LOGF(TAG, "console = %s: shutting the console and the USB port down until the next restart (KEY held at start-up keeps them)",
+         g_cfg.console == CONSOLE_AUTO ? "auto, and no computer on the USB port" : "off");
+    consoleShutDown();
+    return;
+  }
+  serviceSerial();
+}
+
 // cpu_idle_mhz: the clock follows what needs it (clock_policy.h).  Called every time round the loop.
 static void serviceClock(uint32_t nowMs, int32_t usec) {
+  if (s_pokeUntilMs != 0 && (int32_t)(s_pokeUntilMs - nowMs) <= 0) s_pokeUntilMs = 0;  // over (a time long past must not come round again)
   const int idle = g_cfg.cpuIdleMhz();
   if (idle == 0) return;  // no idle clock: the working clock stays (start-up has set it)
   static uint32_t s_usbCheckMs = 0;
@@ -1031,7 +1151,7 @@ static void serviceClock(uint32_t nowMs, int32_t usec) {
   clockpolicy::Needs needs;
   needs.radio = netRadioNeedsFastClock();
   needs.usbHost = s_usb;
-  needs.poked = s_pokeUntilMs != 0 && (int32_t)(s_pokeUntilMs - nowMs) > 0;
+  needs.poked = s_pokeUntilMs != 0;
   const int want = clockpolicy::target(needs, g_cfg.cpuMhz(), idle);
   s_clockReason = want == idle ? "idle" : (needs.radio ? "radio on" : (needs.usbHost ? "USB attached" : "button"));
   if (clockpolicy::mayChange((int)getCpuFrequencyMhz(), want, s_planner.quiet(usec))) applyClock(want);
@@ -1087,6 +1207,8 @@ void setup() {
   fwBegin();  // is this firmware on trial (just installed from the SD card)?
   pinMode(PIN_KEY, INPUT_PULLUP);
   pinMode(PIN_BOOT, INPUT_PULLUP);
+  delay(2);                                      // (the pull-up needs a moment)
+  s_consoleKeep = digitalRead(PIN_KEY) == LOW;   // KEY held at start-up: the console stays on for this run (console_policy.h)
 
   cfgLoadFlash();        // the defaults, then what the clock saved in its flash
   applyCpuSetting();     // 80 MHz unless the settings say otherwise: a clock needs no more
@@ -1102,6 +1224,13 @@ void setup() {
   // the right date.
   bool shtc3 = sensorsBegin();
   LOGF(TAG, "SHTC3 %s", shtc3 ? "ok" : "not responding");
+#if AUDIO_CHIPS_STANDBY
+  // the audio chips share the I2C bus and are not used: power them down, and give their I2S lines a level
+  s_audioStandby = audioChipsStandby();
+  powerQuietAudioPins();
+  LOGF(TAG, "audio chips powered down: codec %s, microphone ADC %s", (s_audioStandby & AUDIO_CODEC_ANSWERED) ? "ok" : "NO ANSWER",
+       (s_audioStandby & AUDIO_MIC_ADC_ANSWERED) ? "ok" : "NO ANSWER");
+#endif
   time_t rtc;
   if (rtcReadUtc(&rtc)) {  // show a plausible time straight away, before WiFi is up
     struct timeval tv = {rtc, 0};
@@ -1117,6 +1246,7 @@ void setup() {
 
   cfgImportSdCard();  // a settings file on an SD card, applied and saved to flash
   applyCpuSetting();  // ... which may have changed the clock speed
+  if (g_cfg.cpuIdleMhz() > 0) buttonEdgesBegin();  // a frame at the idle clock can outlast a tap: the buttons by interrupt too
   initDisplay();
   fwUpdateFromCard(showFirmwareScreen);  // a firmware file on the card: install it and restart (else carry on)
   s_guard.configure(g_cfg.lowBatteryShutdown && g_cfg.hasBattery() && !s_guardOverride, g_cfg.batteryCutoffV);
@@ -1124,6 +1254,10 @@ void setup() {
   char summary[96];
   cfgSummary(summary, sizeof summary);
   LOGF(TAG, "settings: %s", summary);
+  if (s_consoleKeep && g_cfg.console != CONSOLE_ON) {
+    LOGF(TAG, "KEY was held at start-up: the console stays on for this run (console = %s)", g_cfg.console == CONSOLE_AUTO ? "auto" : "off");
+    if (!s_toast[0]) showToast("Console kept on for this run", TOAST_NONE, 4000);  // (what the SD card did comes first)
+  }
 
   netLoadSettings();
   readSlowSensors(millis());
@@ -1134,7 +1268,7 @@ void setup() {
 void loop() {
   const uint32_t nowMs = millis();
   pollButtons(nowMs);
-  serviceSerial();
+  serviceConsole(nowMs);
   fwTrialTick(nowMs);  // a new firmware is kept once it has run for a minute
 
   // toasts raised by the network task ("No active Spotify device", ...)

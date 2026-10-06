@@ -11,6 +11,13 @@
 
 #include "app_model.h"
 
+// wifi_mode = sync: how the last radio session ended, if not well.
+enum RadioTrouble : uint8_t {
+  RADIO_FINE = 0,
+  RADIO_AWAY,         // none of the clock's networks is in range: it looks again every few minutes
+  RADIO_CANNOT_JOIN   // a network is there but the clock could not get in (or get anything done): it backs off
+};
+
 struct SharedState {
   // --- network & time -------------------------------------------------------
   bool wifiUp = false;
@@ -26,6 +33,7 @@ struct SharedState {
   // --- the radio (wifi_mode = sync) -------------------------------------------
   bool radioSync = false;           // sync mode is on
   bool radioAsleep = false;         // ... and the radio is off at the moment
+  uint8_t radioTrouble = 0;         // how the last session ended if not well: RADIO_FINE, RADIO_AWAY, RADIO_CANNOT_JOIN
   int32_t radioWakeInSec = -1;      // seconds until the next session by the clock, -1 = not known
   uint16_t radioOnPermille = 0;     // the share of the time since start that the radio was on, in thousandths
   uint32_t radioSessions = 0;

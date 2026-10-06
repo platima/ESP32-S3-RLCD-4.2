@@ -59,9 +59,11 @@
 #
 # always or sync.  Always keeps the radio connected.  Sync switches it off between syncs: it
 # wakes for the network time (hourly) and the weather (every weather_interval_min), looks at
-# Spotify once each time, and stays on while music plays, after a key press and on the Now
-# Playing page.  Draws far less on a battery; the Spotify strip and the link page need that page
-# or a key press to wake the radio.  See the README.
+# Spotify once each time, and stays on while music plays (see spotify_live), after a key press
+# and on the Now Playing page.  Draws far less on a battery; the Spotify strip and the link page
+# need that page or a key press to wake the radio.  When none of its networks is in range the
+# clock looks again every 2 minutes, later every 5, and at once when a button is pressed.
+# See the README.
 # wifi_mode = always
 
 # ---- Units and formats -------------------------------------------
@@ -104,6 +106,14 @@
 #
 # The Client ID of your app in the Spotify developer dashboard (see the README).
 # spotify_client_id = "your client id"
+#
+# on or off.  Only matters with wifi_mode = sync.  On: while music plays the radio stays on
+# and the clock asks Spotify every 10 seconds, so the strip follows your phone within seconds.
+# Off: the radio sleeps while music plays too, and the clock looks again when the track on
+# screen should be over.  Far less radio, but a track skipped or paused on a phone shows late:
+# when it would have ended, or at the next weather update.  KEY presses and the Now Playing
+# page are live either way.
+# spotify_live = on
 
 # ---- Sensors and battery -----------------------------------------
 #
@@ -141,12 +151,22 @@
 # 80, 160 or 240.  80 uses the least power and is plenty for a clock.
 # cpu_mhz = 80
 #
-# off, 80, 40, 20 or 10: the CPU clock while the radio is off (wifi = off, or between the
-# syncs of wifi_mode = sync).  Slower draws less and a frame takes longer to draw: about 30 ms
-# at 80, 60 at 40, 120 at 20.  The clock goes back to cpu_mhz while the radio is on, for a few
-# seconds after a button press, and for as long as a computer is on the USB port (the console
-# may stop below 80 MHz).  off = no change.
+# off, 80, 40 or 20: the CPU clock while the radio is off (wifi = off, or between the syncs
+# of wifi_mode = sync).  Slower draws less and a frame takes longer to draw: about 30 ms at
+# 80, 60 at 40, 120 at 20.  Try 40 first: it is the lowest clock the chip maker gives figures
+# for.  The clock goes back to cpu_mhz while the radio is on, for a few seconds after a button
+# press, and while a computer is on the USB port with the console running (the console may
+# stop below 80 MHz).  off = no change.
 # cpu_idle_mhz = off
+#
+# on, auto or off: the USB serial console (the log and the commands).  On keeps it running.
+# Auto runs it while a computer is on the USB port and shuts it down, with the USB
+# transceiver, once there has been none for 10 seconds; it then stays off until the clock is
+# restarted with the cable in.  Off shuts it down at the end of every start-up, computer or
+# not.  A console that is shut down saves a little power, and the USB port is dead: to upload
+# a firmware, restart the clock with KEY held down (the console then stays on for that run),
+# or hold BOOT while switching it on, or use the SD card.
+# console = on
 
 # ---- Weather -----------------------------------------------------
 #

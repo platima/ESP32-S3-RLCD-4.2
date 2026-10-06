@@ -109,9 +109,10 @@
 #endif
 
 // "always" keeps the radio connected.  "sync" switches it off between syncs: it wakes for the network time (hourly)
-// and the weather (every WEATHER_INTERVAL_MIN), looks at Spotify once each time, and stays on while music plays,
-// after a key press and on the Now Playing page.  Far less power on a battery, see the README ("Saving power").
-// Not yet tried on the board.
+// and the weather (every WEATHER_INTERVAL_MIN), looks at Spotify once each time, and stays on while music plays
+// (see SPOTIFY_LIVE), after a key press and on the Now Playing page.  When none of its networks is in range it looks
+// again every 2 minutes, later every 5, and at once when a button is pressed.  Far less power on a battery, see the
+// README ("Saving power").  Not yet tried on the board.
 #ifndef WIFI_MODE
 #define WIFI_MODE "always"
 #endif
@@ -225,11 +226,29 @@
 #define CPU_MHZ 80
 #endif
 // The clock while the radio is off (WIFI_ENABLED 0, or between the syncs of WIFI_MODE "sync"): 0 = the same as CPU_MHZ,
-// or 80, 40, 20 or 10.  Slower draws less, and a frame takes longer to draw (about 30 ms at 80 MHz, 120 at 20).  Not
-// yet tried on the board: below 80 MHz the clock of some peripherals follows the CPU, and the USB console may stop,
-// so the clock stays at CPU_MHZ for as long as a computer is on the USB port.
+// or 80, 40 or 20.  Slower draws less, and a frame takes longer to draw (about 30 ms at 80 MHz, 120 at 20).  40 is the
+// lowest clock Espressif gives current figures for (13 mA idle against 22 at 80), so try that first.  Not yet tried on
+// the board: below 80 MHz the clock of some peripherals follows the CPU, and the USB console may stop, so the clock
+// stays at CPU_MHZ for as long as a computer is on the USB port and the console runs.
 #ifndef CPU_IDLE_MHZ
 #define CPU_IDLE_MHZ 0
+#endif
+
+// The USB serial console (the log, and the commands of the README): "on", "auto" or "off".  "auto" runs it while a
+// computer is on the USB port and shuts it down, with the USB transceiver, when there has been none for 10 seconds;
+// "off" shuts it down at the end of every start-up.  It then stays off until the next restart, and the USB port is
+// dead: to upload a firmware restart the clock with KEY held down (the console stays on for that run), or hold BOOT
+// while switching it on, or use the SD card.  Saves a little power.  Not yet tried on the board.
+#ifndef CONSOLE_MODE
+#define CONSOLE_MODE "on"
+#endif
+
+// The audio chips on the board (a codec, a microphone ADC, an amplifier) are not used by the clock.  1 = at
+// start-up they are told to power down over I2C, with the sequences Waveshare's own audio example uses when it
+// closes them, and the I2S lines to them are held low.  0 = they are left as they come out of power-on (the
+// amplifier is held off either way).  Not yet tried on the board.
+#ifndef AUDIO_CHIPS_STANDBY
+#define AUDIO_CHIPS_STANDBY 1
 #endif
 
 // ----------------------------------------------------------------------------
@@ -245,6 +264,12 @@
 // ----------------------------------------------------------------------------
 #ifndef SPOTIFY_ENABLED
 #define SPOTIFY_ENABLED 1  // 0 = off, even with a Client ID
+#endif
+// Only matters with WIFI_MODE "sync".  1 = while music plays the radio stays on and the clock asks Spotify every
+// 10 seconds.  0 = the radio sleeps while music plays too and the clock looks again when the track on screen should
+// be over: far less radio, but a track skipped or paused on a phone shows late.  Not yet tried on the board.
+#ifndef SPOTIFY_LIVE
+#define SPOTIFY_LIVE 1
 #endif
 
 // Spotify gives development-mode apps a small, unpublished request quota; people
@@ -277,9 +302,19 @@
 #define PIN_SD_CMD 21
 #define PIN_SD_D0 39
 
+// The audio section, which the clock does not use: the amplifier's enable and the I2S lines that go out to the chips
+// (the same numbers as Waveshare's board file for this board in 02_Example/XiaoZhi)
+#define PIN_AUDIO_AMP 46  // amplifier enable, high = on
+#define PIN_I2S_MCLK 16
+#define PIN_I2S_BCLK 9
+#define PIN_I2S_WS 45
+#define PIN_I2S_DOUT 8    // data to the codec (the line from it, GPIO10, is the codec's to drive)
+
 #define BATTERY_DIVIDER 3.0f
 #define I2C_ADDR_SHTC3 0x70
 #define I2C_ADDR_PCF85063 0x51
+#define I2C_ADDR_ES8311 0x18  // audio codec
+#define I2C_ADDR_ES7210 0x40  // microphone ADC
 
 // ----------------------------------------------------------------------------
 // Credentials (from secrets.h, included above)

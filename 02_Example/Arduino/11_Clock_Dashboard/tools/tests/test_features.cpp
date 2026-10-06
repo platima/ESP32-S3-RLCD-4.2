@@ -84,7 +84,7 @@ std::string dump(const Settings &s) {
 void testSettingsTable() {
   section("settings table");
   const size_t n = settingCount();
-  CHECK(n == 29);
+  CHECK(n == 31);
   CHECK(n <= 32);  // userSet is a 32 bit mask
   CHECK_STR(settingKey(n), "");
   CHECK_STR(settingNvsKey(n), "");
@@ -1677,7 +1677,7 @@ void testPowerSettings() {
     int mhz;  // the value, 0 = off
   };
   const Case cases[] = {{"off", 0}, {"same", 0}, {"none", 0}, {"no", 0}, {"0", 0},   {"80", 80}, {"80 MHz", 80}, {"80mhz", 80},
-                        {"40", 40}, {"40 MHz", 40}, {"20", 20}, {"20MHz", 20}, {"10", 10}, {"10 mhz", 10}};
+                        {"40", 40}, {"40 MHz", 40}, {"20", 20}, {"20MHz", 20}};
   for (const Case &c : cases) {
     Settings fast;
     fast.cpuSpeed = CPU_240;  // so that every idle value is below it
@@ -1685,14 +1685,21 @@ void testPowerSettings() {
     if (a.r.problems() != 0 || a.s.cpuIdleMhz() != c.mhz) printf("  [%s] gave %d (problems %d)\n", c.text, a.s.cpuIdleMhz(), a.r.problems());
     CHECK(a.r.problems() == 0 && a.s.cpuIdleMhz() == c.mhz);
   }
-  for (const char *v : {"30", "5", "160", "240", "fast", "20.5"}) {
+  // 10 MHz is not on offer (a frame would take a quarter of a second to draw), nor is anything in between
+  for (const char *v : {"10", "10 MHz", "10mhz", "30", "5", "160", "240", "fast", "20.5"}) {
     const Applied a = apply(std::string("cpu_idle_mhz = ") + v);
     if (a.r.bad != 1) printf("  [%s] was not refused\n", v);
     CHECK(a.r.bad == 1 && a.s.cpuIdle == CPUIDLE_OFF);
   }
   CHECK(apply("cpu idle = 40").s.cpuIdle == CPUIDLE_40);  // spelling and aliases
   CHECK(apply("idle_clock = 20").s.cpuIdle == CPUIDLE_20);
-  CHECK(apply("CPU-Idle-MHz: 10").s.cpuIdle == CPUIDLE_10);
+  CHECK(apply("CPU-Idle-MHz: 20").s.cpuIdle == CPUIDLE_20);
+  {  // a value an older firmware saved in flash and this one no longer has is ignored, not misread
+    Settings old;
+    char err[64] = "";
+    CHECK(!applyStoredSetting(old, idx("cpu_idle_mhz"), "10", err, sizeof err) && old.cpuIdle == CPUIDLE_OFF && err[0]);
+    CHECK(applyStoredSetting(old, idx("cpu_idle_mhz"), "20") && old.cpuIdle == CPUIDLE_20);
+  }
 
   // an idle clock that is not below the working one means "no change": the working clock is the floor
   Settings s;
@@ -1704,17 +1711,65 @@ void testPowerSettings() {
   s.cpuIdle = CPUIDLE_40;
   s.cpuSpeed = CPU_80;
   CHECK(s.cpuIdleMhz() == 40);
-  s.cpuIdle = CPUIDLE_10;
+  s.cpuIdle = CPUIDLE_20;
   s.cpuSpeed = CPU_240;
-  CHECK(s.cpuIdleMhz() == 10);
+  CHECK(s.cpuIdleMhz() == 20);
+  s.cpuIdle = (uint8_t)(CPUIDLE_20 + 1);  // a number that is no choice (it was 10 MHz once): no idle clock
+  CHECK(s.cpuIdleMhz() == 0);
+
+  // the console: on by default; auto and off by the usual words
+  CHECK(d.console == CONSOLE_ON);
+  CHECK_STR(settingNvsKey(idx("console")), "console");
+  struct ConsoleCase {
+    const char *text;
+    int mode;
+  };
+  const ConsoleCase consoleCases[] = {{"on", CONSOLE_ON},     {"On", CONSOLE_ON},   {"yes", CONSOLE_ON},   {"always", CONSOLE_ON}, {"true", CONSOLE_ON},
+                                      {"1", CONSOLE_ON},      {"auto", CONSOLE_AUTO}, {"AUTO", CONSOLE_AUTO}, {"usb", CONSOLE_AUTO},
+                                      {"automatic", CONSOLE_AUTO}, {"off", CONSOLE_OFF}, {"no", CONSOLE_OFF}, {"never", CONSOLE_OFF},
+                                      {"false", CONSOLE_OFF}, {"0", CONSOLE_OFF},   {" Off ", CONSOLE_OFF}};
+  for (const ConsoleCase &c : consoleCases) {
+    Settings other;  // start from a value that is not the one asked for
+    other.console = (uint8_t)(c.mode == CONSOLE_AUTO ? CONSOLE_OFF : CONSOLE_AUTO);
+    const Applied a = apply(std::string("console = ") + c.text, other);
+    if (a.r.problems() != 0 || a.s.console != c.mode) printf("  console [%s] gave %d (problems %d)\n", c.text, a.s.console, a.r.problems());
+    CHECK(a.r.problems() == 0 && a.s.console == c.mode);
+  }
+  for (const char *v : {"maybe", "2", "quiet", "115200"}) {
+    const Applied a = apply(std::string("console = ") + v);
+    if (a.r.bad != 1) printf("  console [%s] was not refused\n", v);
+    CHECK(a.r.bad == 1 && a.s.console == CONSOLE_ON);
+  }
+  CHECK(apply("serial = off").s.console == CONSOLE_OFF);  // the names people will try
+  CHECK(apply("Serial Console: auto").s.console == CONSOLE_AUTO);
+  CHECK(apply("usb_console = off").s.console == CONSOLE_OFF);
+  CHECK(apply("console-mode = auto").s.console == CONSOLE_AUTO);
+  CHECK(apply("log = off").s.console == CONSOLE_OFF);
+
+  // Spotify while music plays, in sync mode: live by default, "off" lets the radio sleep
+  CHECK(d.spotifyLive);
+  CHECK_STR(settingNvsKey(idx("spotify_live")), "splive");
+  CHECK(!apply("spotify_live = off").s.spotifyLive && apply("spotify_live = off").r.problems() == 0);
+  CHECK(!apply("Spotify Live: no").s.spotifyLive);
+  CHECK(!apply("spotify_follow = off").s.spotifyLive && !apply("spotify-stay-connected = 0").s.spotifyLive);
+  {
+    Settings off;
+    off.spotifyLive = false;
+    CHECK(apply("spotify_live = on", off).s.spotifyLive);
+    CHECK(!apply("spotify_live = sometimes", off).s.spotifyLive && apply("spotify_live = sometimes", off).r.bad == 1);
+  }
 
   // they come out of the example file, with their help text
   static char buf[16384];
   Settings cur;
   cur.wifiMode = WIFIMODE_SYNC;
   cur.cpuIdle = CPUIDLE_20;
+  cur.console = CONSOLE_AUTO;
+  cur.spotifyLive = false;
   CHECK(renderExampleConfig(cur, "", buf, sizeof buf) > 0);
   CHECK(strstr(buf, "# wifi_mode = sync") != nullptr && strstr(buf, "# cpu_idle_mhz = 20") != nullptr);
+  CHECK(strstr(buf, "# console = auto") != nullptr && strstr(buf, "# spotify_live = off") != nullptr);
+  CHECK(strstr(buf, "off, 80, 40 or 20:") != nullptr && strstr(buf, "20 or 10") == nullptr);  // the help does not offer 10 MHz
   const Applied back = apply(buf);  // and read back, they give the same
   CHECK(back.s.wifiMode == WIFIMODE_ALWAYS);  // (everything commented out: nothing is applied)
 }

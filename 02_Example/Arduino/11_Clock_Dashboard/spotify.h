@@ -40,14 +40,18 @@ bool spotifyPost(SpotifyCommand cmd);
 // The UI task says every time round its loop whether the Now Playing page is on screen: it needs the radio
 // (and the linking page) while it is, and for a minute after.
 void spotifySetPageShown(bool shown);
-// Network task: does Spotify need the radio right now?  Music is playing, a command waits, it was playing
-// or got a command a few minutes ago, or the Now Playing page is open.
+// Network task: does Spotify need the radio right now?  A command waits, the Now Playing page is open, or
+// (with spotify_live = on) music is playing or was a few minutes ago.
 bool spotifyWantsRadio();
 // A radio session looks at the player once, even when nothing needs it for longer: begin the session with
 // spotifyWindowBegin(), and spotifyPeekPending() says whether that look is still to come.
 void spotifyWindowBegin();
 bool spotifyPeekPending();
-// Let go of the connections and clear a track nobody follows now.  Call before the radio goes off.
-void spotifyRadioDown();
+// spotify_live = off: the radio does not stay on for the music; instead a look is due when the track on screen
+// should be over.  True from then until that look has been taken.
+bool spotifyLookDue();
+// Let go of the connections.  Call before the radio goes off.  `keepTrack` false (the network is gone) also
+// takes a track nobody can follow any more off the screen.
+void spotifyRadioDown(bool keepTrack);
 // Drop the commands waiting for a radio that could not be joined, with a notice (`why`).
 void spotifyFlushQueue(const char *why);

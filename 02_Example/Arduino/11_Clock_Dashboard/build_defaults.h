@@ -100,6 +100,7 @@ inline Settings buildDefaults(BuildReport *rep = nullptr) {
   // Spotify
   putBool(d, rep, "SPOTIFY_ENABLED", "spotify", SPOTIFY_ENABLED);
   put(d, rep, "SPOTIFY_CLIENT_ID", "spotify_client_id", SPOTIFY_CLIENT_ID);
+  putBool(d, rep, "SPOTIFY_LIVE", "spotify_live", SPOTIFY_LIVE);
 
   // Sensors and battery
   putFloat(d, rep, "INDOOR_TEMP_OFFSET_C", "indoor_offset", INDOOR_TEMP_OFFSET_C);
@@ -112,6 +113,7 @@ inline Settings buildDefaults(BuildReport *rep = nullptr) {
   // Power
   putInt(d, rep, "CPU_MHZ", "cpu_mhz", CPU_MHZ);
   putInt(d, rep, "CPU_IDLE_MHZ", "cpu_idle_mhz", CPU_IDLE_MHZ);
+  put(d, rep, "CONSOLE_MODE", "console", CONSOLE_MODE);
 
   // Weather
   putInt(d, rep, "WEATHER_INTERVAL_MIN", "weather_interval_min", WEATHER_INTERVAL_MIN);

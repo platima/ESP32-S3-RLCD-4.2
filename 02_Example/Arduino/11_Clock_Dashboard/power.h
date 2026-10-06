@@ -11,8 +11,11 @@
 void powerSetCpuMhz(int mhz);
 
 // First thing in setup(): takes the display pins back from a deep sleep (their levels are
-// carried over, so nothing floats in between).
+// carried over, so nothing floats in between).  The audio amplifier's enable is among them, held low (off).
 void powerAfterWake();
+
+// Gives the I2S lines to the unused audio chips a level (the chip's weak pull-downs), so they do not float.
+void powerQuietAudioPins();
 bool powerWokeFromTimer();   // woken by the five minute battery check, not by a person
 bool powerWasLowShutdown();  // the last run ended in a low-battery shutdown (kept through deep sleep)
 void powerForgetLowShutdown();

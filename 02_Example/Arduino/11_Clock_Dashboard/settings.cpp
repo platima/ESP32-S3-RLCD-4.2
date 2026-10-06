@@ -61,7 +61,11 @@ const EnumName kWifiModeNames[] = {{"always", WIFIMODE_ALWAYS}, {"on", WIFIMODE_
                                    {nullptr, 0}};
 const EnumName kCpuIdleNames[] = {{"off", CPUIDLE_OFF}, {"same", CPUIDLE_OFF}, {"none", CPUIDLE_OFF}, {"no", CPUIDLE_OFF}, {"0", CPUIDLE_OFF},
                                   {"80", CPUIDLE_80},   {"80mhz", CPUIDLE_80}, {"40", CPUIDLE_40},    {"40mhz", CPUIDLE_40},
-                                  {"20", CPUIDLE_20},   {"20mhz", CPUIDLE_20}, {"10", CPUIDLE_10},    {"10mhz", CPUIDLE_10}, {nullptr, 0}};
+                                  {"20", CPUIDLE_20},   {"20mhz", CPUIDLE_20}, {nullptr, 0}};
+const EnumName kConsoleNames[] = {{"on", CONSOLE_ON},     {"yes", CONSOLE_ON},  {"always", CONSOLE_ON}, {"true", CONSOLE_ON},  {"1", CONSOLE_ON},
+                                  {"auto", CONSOLE_AUTO}, {"usb", CONSOLE_AUTO}, {"automatic", CONSOLE_AUTO},
+                                  {"off", CONSOLE_OFF},   {"no", CONSOLE_OFF},  {"never", CONSOLE_OFF}, {"false", CONSOLE_OFF}, {"0", CONSOLE_OFF},
+                                  {nullptr, 0}};
 const EnumName kCpuNames[] = {{"80", CPU_80},   {"80mhz", CPU_80},   {"160", CPU_160}, {"160mhz", CPU_160},
                               {"240", CPU_240}, {"240mhz", CPU_240}, {nullptr, 0}};
 
@@ -98,9 +102,11 @@ const Def kDefs[] = {
     {"wifi_mode", "wmode", T_ENUM, OFF(wifiMode), 0, 0, 0, kWifiModeNames, false, "WiFi",
      "always or sync.  Always keeps the radio connected.  Sync switches it off between syncs: it\n"
      "wakes for the network time (hourly) and the weather (every weather_interval_min), looks at\n"
-     "Spotify once each time, and stays on while music plays, after a key press and on the Now\n"
-     "Playing page.  Draws far less on a battery; the Spotify strip and the link page need that page\n"
-     "or a key press to wake the radio.  See the README."},
+     "Spotify once each time, and stays on while music plays (see spotify_live), after a key press\n"
+     "and on the Now Playing page.  Draws far less on a battery; the Spotify strip and the link page\n"
+     "need that page or a key press to wake the radio.  When none of its networks is in range the\n"
+     "clock looks again every 2 minutes, later every 5, and at once when a button is pressed.\n"
+     "See the README."},
     // 8
     {"units", "units", T_ENUM, OFF(units), 0, 0, 0, kUnitNames, false, "Units and formats",
      "metric (degrees C, km/h) or imperial (degrees F, mph)."},
@@ -129,6 +135,13 @@ const Def kDefs[] = {
      "on or off.  Spotify also needs the Client ID below."},
     {"spotify_client_id", "spid", T_STRING, OFF(spotifyClientId), SZ(spotifyClientId), 0, 0, nullptr, true, "Spotify",
      "The Client ID of your app in the Spotify developer dashboard (see the README)."},
+    {"spotify_live", "splive", T_BOOL, OFF(spotifyLive), 0, 0, 0, nullptr, false, "Spotify",
+     "on or off.  Only matters with wifi_mode = sync.  On: while music plays the radio stays on\n"
+     "and the clock asks Spotify every 10 seconds, so the strip follows your phone within seconds.\n"
+     "Off: the radio sleeps while music plays too, and the clock looks again when the track on\n"
+     "screen should be over.  Far less radio, but a track skipped or paused on a phone shows late:\n"
+     "when it would have ended, or at the next weather update.  KEY presses and the Now Playing\n"
+     "page are live either way."},
     // 19
     {"indoor_offset", "ioff", T_FLOAT, OFF(indoorOffsetC), 0, -15, 15, nullptr, false, "Sensors and battery",
      "Degrees C added to the indoor temperature to make up for the board warming the\n"
@@ -157,12 +170,20 @@ const Def kDefs[] = {
     {"cpu_mhz", "cpu", T_ENUM, OFF(cpuSpeed), 0, 0, 0, kCpuNames, false, "Power",
      "80, 160 or 240.  80 uses the least power and is plenty for a clock."},
     {"cpu_idle_mhz", "cpuidle", T_ENUM, OFF(cpuIdle), 0, 0, 0, kCpuIdleNames, false, "Power",
-     "off, 80, 40, 20 or 10: the CPU clock while the radio is off (wifi = off, or between the\n"
-     "syncs of wifi_mode = sync).  Slower draws less and a frame takes longer to draw: about 30 ms\n"
-     "at 80, 60 at 40, 120 at 20.  The clock goes back to cpu_mhz while the radio is on, for a few\n"
-     "seconds after a button press, and for as long as a computer is on the USB port (the console\n"
-     "may stop below 80 MHz).  off = no change."},
-    // 26
+     "off, 80, 40 or 20: the CPU clock while the radio is off (wifi = off, or between the syncs\n"
+     "of wifi_mode = sync).  Slower draws less and a frame takes longer to draw: about 30 ms at\n"
+     "80, 60 at 40, 120 at 20.  Try 40 first: it is the lowest clock the chip maker gives figures\n"
+     "for.  The clock goes back to cpu_mhz while the radio is on, for a few seconds after a button\n"
+     "press, and while a computer is on the USB port with the console running (the console may\n"
+     "stop below 80 MHz).  off = no change."},
+    {"console", "console", T_ENUM, OFF(console), 0, 0, 0, kConsoleNames, false, "Power",
+     "on, auto or off: the USB serial console (the log and the commands).  On keeps it running.\n"
+     "Auto runs it while a computer is on the USB port and shuts it down, with the USB\n"
+     "transceiver, once there has been none for 10 seconds; it then stays off until the clock is\n"
+     "restarted with the cable in.  Off shuts it down at the end of every start-up, computer or\n"
+     "not.  A console that is shut down saves a little power, and the USB port is dead: to upload\n"
+     "a firmware, restart the clock with KEY held down (the console then stays on for that run),\n"
+     "or hold BOOT while switching it on, or use the SD card."},
     {"weather_interval_min", "wxint", T_INT, OFF(weatherIntervalMin), 0, 5, 240, nullptr, false, "Weather",
      "Minutes between weather updates, 5 to 240 (default 15)."},
 };
@@ -185,6 +206,9 @@ const Alias kAliases[] = {
     {"cpu_speed", "cpu_mhz"},       {"offset", "indoor_offset"},     {"temp_offset", "indoor_offset"},
     {"wifi_sync", "wifi_mode"},     {"radio_mode", "wifi_mode"},     {"cpu_idle", "cpu_idle_mhz"},
     {"idle_cpu", "cpu_idle_mhz"},   {"idle_clock", "cpu_idle_mhz"},
+    {"serial", "console"},          {"serial_console", "console"},   {"usb_console", "console"},
+    {"console_mode", "console"},    {"log", "console"},
+    {"spotify_follow", "spotify_live"}, {"spotify_stay_connected", "spotify_live"},
     {"backup_ssid", "wifi_backup_ssid"},          {"backup_wifi", "wifi_backup_ssid"},
     {"backup_network", "wifi_backup_ssid"},       {"wifi_ssid2", "wifi_backup_ssid"},
     {"ssid2", "wifi_backup_ssid"},                {"second_ssid", "wifi_backup_ssid"},
