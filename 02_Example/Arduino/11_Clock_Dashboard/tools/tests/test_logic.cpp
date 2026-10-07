@@ -1663,6 +1663,111 @@ static void testButtonEdges() {
   }
 }
 
+// KEY held for five seconds and then let go restarts the clock (HoldRelease, fed from a ClickDetector).
+struct HoldRun {
+  int armed = 0, fired = 0, longs = 0, clicks = 0;
+  int64_t armedAt = -1, firedAt = -1;
+};
+
+// `level(t)` is the pin; the loop looks every 5 ms, starting at `startMs` on the clock's own millis().
+template <class Level>
+static HoldRun runHold(Level level, uint32_t endMs, uint32_t holdMs = 5000, uint32_t startMs = 0) {
+  ClickDetector det(320, 800, 25);
+  HoldRelease hold(holdMs);
+  HoldRun r;
+  for (uint32_t t = 0; t <= endMs; t += 5) {
+    const ClickEvent e = det.update(level(t), startMs + t);
+    if (e == CLICK_LONG) r.longs++;
+    else if (e != CLICK_NONE) r.clicks++;
+    switch (hold.update(det.isDown(), det.heldMs())) {
+      case HoldRelease::ARMED:
+        r.armed++;
+        r.armedAt = t;
+        break;
+      case HoldRelease::FIRED:
+        r.fired++;
+        r.firedAt = t;
+        break;
+      default:
+        break;
+    }
+  }
+  return r;
+}
+
+static void testHoldRelease() {
+  section("buttons: a long hold that acts when the button is let go");
+  {  // held from 1.0 s to 7.0 s: armed once at five seconds of holding, fired once when it comes up; the
+     // ordinary long press (0.8 s) is reported as always, and no click
+    const HoldRun r = runHold([](uint32_t t) { return t >= 1000 && t < 7000; }, 9000);
+    CHECK(r.armed == 1 && r.armedAt >= 6000 && r.armedAt <= 6000 + 40);
+    CHECK(r.fired == 1 && r.firedAt >= 7000 && r.firedAt <= 7000 + 40);
+    CHECK(r.longs == 1 && r.clicks == 0);
+  }
+  {  // let go a moment too early (4.9 s): nothing, however long one waits
+    const HoldRun r = runHold([](uint32_t t) { return t >= 1000 && t < 5900; }, 20000);
+    CHECK(r.armed == 0 && r.fired == 0 && r.longs == 1);
+  }
+  {  // clicks and the ordinary hold: nothing
+    const HoldRun one = runHold([](uint32_t t) { return t >= 1000 && t < 1100; }, 5000);
+    const HoldRun two = runHold([](uint32_t t) { return (t >= 1000 && t < 1080) || (t >= 1200 && t < 1280); }, 5000);
+    const HoldRun lng = runHold([](uint32_t t) { return t >= 1000 && t < 2500; }, 9000);
+    CHECK(one.armed == 0 && one.fired == 0 && one.clicks == 1);
+    CHECK(two.armed == 0 && two.fired == 0 && two.clicks == 1);
+    CHECK(lng.armed == 0 && lng.fired == 0 && lng.longs == 1);
+  }
+  {  // several short holds do not add up
+    const HoldRun r = runHold([](uint32_t t) { return t >= 1000 && t < 20000 && (t - 1000) % 4000 < 3000; }, 22000);
+    CHECK(r.armed == 0 && r.fired == 0);
+  }
+  {  // held for half a minute: armed once, nothing more while it is down, fired once at the end
+    const HoldRun r = runHold([](uint32_t t) { return t >= 1000 && t < 31000; }, 33000);
+    CHECK(r.armed == 1 && r.fired == 1 && r.firedAt >= 31000 && r.firedAt <= 31040);
+  }
+  {  // still down at the end: armed, not fired (the clock does not restart under a finger)
+    const HoldRun r = runHold([](uint32_t t) { return t >= 1000; }, 20000);
+    CHECK(r.armed == 1 && r.fired == 0);
+  }
+  {  // a contact that chatters for 10 ms in the middle of the hold is not "let go" (the debounced state is used)
+    const HoldRun r = runHold([](uint32_t t) { return t >= 1000 && t < 8000 && !(t >= 6500 && t < 6510); }, 10000);
+    CHECK(r.armed == 1 && r.fired == 1 && r.firedAt >= 8000);
+    // ... and one that chatters before the five seconds are up does not start the count again
+    const HoldRun early = runHold([](uint32_t t) { return t >= 1000 && t < 8000 && !(t >= 3000 && t < 3010); }, 10000);
+    CHECK(early.armed == 1 && early.armedAt >= 6000 && early.armedAt <= 6040);
+  }
+  {  // twice in a row works twice
+    const HoldRun r = runHold([](uint32_t t) { return (t >= 1000 && t < 7000) || (t >= 9000 && t < 15000); }, 17000);
+    CHECK(r.armed == 2 && r.fired == 2);
+  }
+  {  // across the wrap of millis()
+    const HoldRun r = runHold([](uint32_t t) { return t >= 1000 && t < 7000; }, 9000, 5000, 0xFFFFF000u);
+    CHECK(r.armed == 1 && r.fired == 1 && r.armedAt >= 6000 && r.armedAt <= 6040);
+  }
+  {  // the detector's own view: up means 0 ms, down counts from the moment the press was accepted
+    ClickDetector det(320, 800, 25);
+    CHECK(!det.isDown() && det.heldMs() == 0);
+    for (uint32_t t = 0; t <= 1000; t += 5) det.update(false, t);
+    CHECK(!det.isDown() && det.heldMs() == 0);
+    for (uint32_t t = 1005; t <= 3000; t += 5) det.update(true, t);
+    CHECK(det.isDown() && det.heldMs() >= 1960 && det.heldMs() <= 1995);  // 2 s less the 25 ms of debounce
+    for (uint32_t t = 3005; t <= 3100; t += 5) det.update(false, t);
+    CHECK(!det.isDown() && det.heldMs() == 0);
+    // fed from recorded changes (the idle clock): a press recorded at 5000, first looked at after a slow frame
+    // (120 ms later, which is when it is accepted and the count starts), then every 5 ms
+    det.edge(true, 5000);
+    det.edge(true, 5120);
+    for (uint32_t t = 5125; t <= 11000; t += 5) det.edge(true, t);
+    CHECK(det.isDown() && det.heldMs() == 11000 - 5120);
+    HoldRelease hold(5000);
+    CHECK(hold.update(det.isDown(), det.heldMs()) == HoldRelease::ARMED && hold.armed());
+    CHECK(hold.update(det.isDown(), det.heldMs()) == HoldRelease::NONE);
+    det.edge(false, 11500);
+    det.edge(false, 11600);
+    CHECK(hold.update(det.isDown(), det.heldMs()) == HoldRelease::FIRED && !hold.armed());
+    CHECK(hold.update(det.isDown(), det.heldMs()) == HoldRelease::NONE);
+  }
+}
+
 int main() {
   testCalendar();
   testTimeZones();
@@ -1676,6 +1781,7 @@ int main() {
   testLinkPage();
   testButtons();
   testButtonEdges();
+  testHoldRelease();
   printf("\n%d checks, %d failed\n", g_checks, g_failed);
   return g_failed ? 1 : 0;
 }

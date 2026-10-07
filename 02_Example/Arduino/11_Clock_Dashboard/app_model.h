@@ -83,6 +83,12 @@ enum UiCharge : uint8_t {
 #define UI_INFO_LINES 14  // lines on an info page (PAGE_INFO or PAGE_POWER)
 #define UI_INFO_LINE_LEN 54
 
+// The banner when KEY has been held long enough for a restart (it happens when the button is let go), and
+// the one that follows.  Here because the layout check in tools/ui_preview measures the first one: it is
+// the longest banner the clock shows.
+#define UI_TOAST_RESTART_HOLD "Let go of KEY to restart (reads SD)"
+#define UI_TOAST_RESTARTING "Restarting..."
+
 // The screen shown at start-up while the firmware is updated from the SD card (uiDrawFirmwareUpdate).
 enum UiFwKind : uint8_t {
   FW_BUSY = 0,  // checking or writing

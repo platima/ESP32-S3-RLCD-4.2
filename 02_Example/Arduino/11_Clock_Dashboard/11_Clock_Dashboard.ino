@@ -59,6 +59,8 @@ static Preferences s_uiPrefs;  // namespace "ui": remembers the screen polarity 
 
 static ClickDetector s_key(KEY_MULTI_CLICK_GAP_MS, KEY_LONG_PRESS_MS);
 static ClickDetector s_boot(KEY_MULTI_CLICK_GAP_MS, BOOT_LONG_PRESS_MS);
+static HoldRelease s_restartHold(KEY_RESTART_HOLD_MS);  // KEY held for five seconds, then let go: restart
+static bool s_restartAsked = false;                     // ... which loop() then does
 
 static UiPage s_page = PAGE_DASHBOARD;
 static bool s_forceRedraw = true;
@@ -231,6 +233,20 @@ static void pollButtons(uint32_t nowMs) {
   if (active || keyDown || bootDown || k != CLICK_NONE || b != CLICK_NONE) s_pokeUntilMs = (nowMs + clockpolicy::kPokeMs) | 1u;
   if (k != CLICK_NONE) handleKey(k);
   if (b != CLICK_NONE) handleBoot(b);
+
+  // KEY held for five seconds and then let go: a restart, which is when the clock reads the SD card (a settings
+  // file, a firmware file).  It waits for the button to come up, because KEY held while the clock starts means
+  // "keep the console" (and, on the battery-empty screen, "start anyway").
+  switch (s_restartHold.update(s_key.isDown(), s_key.heldMs())) {
+    case HoldRelease::ARMED:
+      showToast(UI_TOAST_RESTART_HOLD, TOAST_NONE, 60000);
+      break;
+    case HoldRelease::FIRED:
+      s_restartAsked = true;
+      break;
+    default:
+      break;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1114,6 +1130,17 @@ static void applyClock(int mhz) {
 // The working clock from the settings (at start-up, and after the settings are read).
 static void applyCpuSetting() { applyClock(g_cfg.cpuMhz()); }
 
+// A restart someone asked for with KEY (held for five seconds, then let go).  The SD card is only read while
+// the clock starts, so this is how a card that was put in while it ran gets read, without the battery coming out.
+static void restartOnRequest() {
+  LOGF(TAG, "KEY was held for %d s: restarting (the SD card is read at start-up)", (int)(KEY_RESTART_HOLD_MS / 1000));
+  showToast(UI_TOAST_RESTARTING, TOAST_NONE, 10000);
+  renderFrame(time(nullptr), 0);  // on the glass before the chip goes down
+  delay(800);                     // (long enough to read, and to press KEY again for "keep the console")
+  fwConfirmNow();  // a restart you asked for is no failure of a new firmware
+  ESP.restart();
+}
+
 // Is a computer on the USB port?  (Below 80 MHz the USB console may stop, which would look like a crash.)
 // Always "no" once the console was shut down: the USB transceiver is off then, and there is no console to keep.
 static bool usbHostAttached() {
@@ -1197,12 +1224,7 @@ static void announceConfig() {
 // Arduino entry points
 // ---------------------------------------------------------------------------
 void setup() {
-  Serial.begin(115200);
-#if ARDUINO_USB_CDC_ON_BOOT
-  // Don't stall for the default 100 ms when no USB host is reading.  Not 0: with a
-  // zero timeout HWCDC::write() can spin forever if the host stops draining data.
-  Serial.setTxTimeoutMs(10);
-#endif
+  consoleBegin();
   delay(100);
   powerAfterWake();
   fwBegin();  // is this firmware on trial (just installed from the SD card)?
@@ -1269,6 +1291,7 @@ void setup() {
 void loop() {
   const uint32_t nowMs = millis();
   pollButtons(nowMs);
+  if (s_restartAsked) restartOnRequest();
   serviceConsole(nowMs);
   fwTrialTick(nowMs);  // a new firmware is kept once it has run for a minute
 

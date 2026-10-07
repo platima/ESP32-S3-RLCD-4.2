@@ -283,6 +283,7 @@
 // KEY button timing
 #define KEY_MULTI_CLICK_GAP_MS 320   // pause after the last click before the count is acted on
 #define KEY_LONG_PRESS_MS 800
+#define KEY_RESTART_HOLD_MS 5000     // KEY held this long, then let go: the clock restarts (and so reads the SD card)
 #define BOOT_LONG_PRESS_MS 1000
 
 // ----------------------------------------------------------------------------

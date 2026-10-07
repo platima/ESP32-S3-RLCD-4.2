@@ -69,6 +69,11 @@ class ClickDetector {
     return before != CLICK_NONE ? before : after;
   }
 
+  // The debounced state of the button, and for how long it has been down (0 when it is up), by the time
+  // of the last update.
+  bool isDown() const { return stable_; }
+  uint32_t heldMs() const { return stable_ ? (uint32_t)(lastMs_ - pressStartMs_) : 0; }
+
  private:
   uint32_t gapMs_, longMs_, debounceMs_;
   bool seen_ = false;
@@ -80,4 +85,32 @@ class ClickDetector {
   uint32_t rawSinceMs_ = 0;
   uint32_t pressStartMs_ = 0;
   uint32_t lastReleaseMs_ = 0;
+};
+
+// A very long hold that acts when the button is let go: "armed" once it has been down for `holdMs` (the moment
+// to say so on the screen), "fired" when it then comes up.  The clock restarts on this, and it must not restart
+// with the button still down: KEY held while the clock starts means something else.  Feed it the debounced
+// state of a ClickDetector (isDown(), heldMs()).
+class HoldRelease {
+ public:
+  enum Event : uint8_t { NONE = 0, ARMED, FIRED };
+
+  explicit HoldRelease(uint32_t holdMs) : holdMs_(holdMs) {}
+
+  Event update(bool down, uint32_t heldMs) {
+    if (down) {
+      if (armed_ || heldMs < holdMs_) return NONE;
+      armed_ = true;
+      return ARMED;
+    }
+    if (!armed_) return NONE;
+    armed_ = false;
+    return FIRED;
+  }
+
+  bool armed() const { return armed_; }
+
+ private:
+  uint32_t holdMs_;
+  bool armed_ = false;
 };

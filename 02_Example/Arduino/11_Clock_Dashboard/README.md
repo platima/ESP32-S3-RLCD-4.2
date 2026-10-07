@@ -72,8 +72,8 @@ settings file from an SD card. Later wins:
 
 1. **Format a card as FAT32** (the usual format of cards up to 32 GB; larger cards come as exFAT, which the clock cannot
    read, it says *SD card is not FAT32* on screen if you try). Any small card will do.
-2. Put the card in the slot and **restart** the clock (turn it off and on again; the card is only looked at while it
-   starts). When it finds a card without a settings file it **writes one**, `ESP32-S3-RLCD-Config.txt`, which explains every
+2. Put the card in the slot and **restart** the clock: **hold KEY for five seconds and let go**, or turn it off and on
+   again (the card is only looked at while it starts). When it finds a card without a settings file it **writes one**, `ESP32-S3-RLCD-Config.txt`, which explains every
    setting and has them all commented out, showing the value in use. A banner says *Wrote settings file to SD card*.
    (A copy of that file is in this repository: [`docs/ESP32-S3-RLCD-Config.example.txt`](docs/ESP32-S3-RLCD-Config.example.txt).)
 3. Take the card to a computer, open the file in any text editor, remove the `#` in front of a setting, change its value,
@@ -194,7 +194,7 @@ firmware file to the SD card, put the card in and restart the clock.
    install with a programmer, and the clock refuses it (*Too big*).
 2. Copy it to the top folder of the FAT32 card, as it is or named **`ESP32-S3-RLCD-Firmware.bin`**. With more than one of
    these files on the card the clock does nothing and says so.
-3. Put the card in and restart the clock. At start-up it checks the file, shows a progress screen, writes the firmware and
+3. Put the card in and restart the clock (hold KEY for five seconds and let go). At start-up it checks the file, shows a progress screen, writes the firmware and
    restarts into it; about 15 to 30 seconds (an estimate, not measured). Afterwards the file is renamed `….done`, so it is
    not installed again. A settings file on the same card is applied first.
 
@@ -235,6 +235,7 @@ Turn WiFi on for a few minutes now and then and it sets itself again.
 | | 2 clicks | Next track |
 | | 3 clicks | Previous track (like most players, Spotify may restart the current track first if it is well in) |
 | | hold 0.8 s | Refresh weather and Spotify now |
+| | hold 5 s, then let go | **Restart the clock.** That is when it reads the SD card, so this is how a card you have just put in gets read (settings, a firmware file) without switching the clock off. A banner says when to let go |
 | **BOOT** (GPIO0) | click | Next page: Dashboard, Now Playing, System info, Power and settings, Legend |
 | | 2 clicks | Back to the dashboard |
 | | 3 clicks | System info page |
@@ -700,10 +701,12 @@ transceiver and its pull-up are switched off, and `cpu_idle_mhz` no longer waits
 down until the next restart**, because with the transceiver off the clock cannot see a computer arrive, and the computer
 no longer sees the clock: there is no serial port, and the Arduino IDE cannot reset it for an upload. Three ways back:
 
+* with `auto`, plug the cable into the computer and restart the clock: hold KEY for five seconds and let go (see
+  [Controls](#controls)); no need to switch it off;
 * **restart the clock with KEY held down**: the console then stays on for that run whatever the setting says (the
-  *Power and settings* page says so). From there `set console = on` in the console changes the setting for good, and
-  an upload works as usual;
-* with `auto`, simply restart it with the cable to the computer in;
+  *Power and settings* page says so). Without switching it off: hold KEY for five seconds, let go, and press KEY again
+  while the screen says *Restarting...*, keeping it down for two seconds. From there `set console = on` in the console
+  changes the setting for good, and an upload works as usual;
 * hold **BOOT** while switching it on (the chip's own download mode, which no setting can take away), or use the
   [SD card](#updating-the-firmware-from-the-sd-card), for the firmware as for the setting (`console = on` in the file).
 
@@ -754,7 +757,7 @@ down, no statement about its state after power-on was found, which is why both a
 | *N built-in defaults not used* | A value in `secrets.h` fails the settings' own checks (a misspelt choice, a number outside its limits). It is left out and the factory value used; the *Power and settings* page and the serial log name the macro and say what it wants, see [Building the settings in](#building-the-settings-in) |
 | A setting in `secrets.h` has no effect | The clock's flash holds a value for it from an earlier SD card, and that wins over the build. `reset_all = yes` on a card forgets them, or `name =` with nothing after the `=` forgets one |
 | *N changed, NOT saved to flash* | The settings from the card are in force for this run, but the clock's flash would not take all of them (full or failing), so they are gone at the next restart. Leave the card in, or type `config` in the serial console to see what is in force |
-| The settings file is ignored | It has to be in the card's top folder and called `ESP32-S3-RLCD-Config.txt` (`ESP32-S31-RLCD-Config.txt` is accepted too, in case of a typo); the clock only looks at start-up |
+| The settings file is ignored | It has to be in the card's top folder and called `ESP32-S3-RLCD-Config.txt` (`ESP32-S31-RLCD-Config.txt` is accepted too, in case of a typo); the clock only looks at start-up, so restart it with the card in (hold KEY for five seconds and let go) |
 | No battery icon, or the wrong one | It takes about 13 minutes after a reboot and has limits, see [Battery](#battery); type `battery` in the serial console and look at the trend and step |
 | Gauge says full on USB with no battery | Say `battery = none` in the settings |
 | The gauge stops at 93 to 97 % when the cell is full (a tester says 4.20 V), or the icon never says *full* | The ADC reads a little low. Calibrate it: `batcal 4.20` in the serial console, or `battery_calibration` in the settings, see [Calibrating the voltage](#calibrating-the-voltage) |
@@ -815,6 +818,8 @@ Written and tested on a PC (and compiled), never run on the real board:
   is noticed in the first ten seconds, the KEY-held start that keeps the console, and the `set` command;
 * the buttons read by interrupt (only with `cpu_idle_mhz` set): the replay is tested on a PC with simulated taps and
   contact chatter, the interrupts themselves are not;
+* the restart by KEY (held for five seconds, then let go): when it arms and fires is tested on a PC and the banner is
+  measured on the rendered screen; the restart itself, and the card being read after it, are not;
 * the audio chips' power-down at start-up and the pull-downs on their I2S lines (see
   [What is switched off](#what-is-switched-off));
 * from earlier: the Spotify linking flow, the charging indicator, `PIN_CHARGE_STATUS`.
@@ -864,7 +869,8 @@ build the sketch.
   on its plate, the battery gauge must not shift with the number of digits or run into the status message, today's big
   temperature must start where the condition text does (168 combinations), nothing may touch the weather separators
   (including with -30 °C and 110 °F), every date format must fit, no page may run off the screen, the moon glyph must
-  fill and mirror correctly; each check is shown to catch the old, faulty layout before it is trusted.
+  fill and mirror correctly, the legend's lines for KEY must stop short of the BOOT column and the longest banner must
+  fit its band; each check is shown to catch the old, faulty layout before it is trusted.
   `bash tools/ui_preview/run_fuzz.sh` renders thousands of adversarial frames under AddressSanitizer.
 * **`bash tools/tests/run_tests.sh`** runs the host tests: calendar and ISO week maths, every time zone rule in the table,
   the SHTC3 CRC, battery curve and humidity maths, the Open-Meteo and Spotify parsers against fixtures (including a

@@ -1346,8 +1346,9 @@ void drawLegendPage(u8g2_t *u, const UiModel &) {
   txt(u, 8, 237, "KEY BUTTON");
   txt(u, 208, 237, "BOOT BUTTON");
   u8g2_SetFont(u, F_BODY);
+  // (KEY held for five seconds and let go restarts the clock, which is when it reads the SD card)
   const char *const key[4] = {"1 click: play / pause", "2 clicks: next track", "3 clicks: previous track",
-                              "hold: refresh now"};
+                              "hold: refresh; 5 s: restart"};
   const char *const boot[4] = {"1 click: next page", "2 clicks: dashboard", "3 clicks: system info",
                                "hold: invert the screen"};
   for (int i = 0; i < 4; i++) {

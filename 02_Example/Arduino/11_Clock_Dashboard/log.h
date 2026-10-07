@@ -14,6 +14,10 @@ extern volatile bool g_consoleOn;
 bool logBegin();  // true: go ahead and print, then call logEnd()
 void logEnd();
 
+// Starts the serial port.  First thing in setup().  (Also undoes what consoleShutDown() did to the USB pins,
+// which outlives a restart that is not a power-on.)
+void consoleBegin();
+
 // Shuts the console down until the next restart: nothing more is printed, the serial driver is stopped (its
 // interrupt and buffers freed) and, when Serial is the chip's USB port, the USB transceiver with its pull-up
 // is switched off, so a computer no longer sees the clock.  Call it from the UI task.

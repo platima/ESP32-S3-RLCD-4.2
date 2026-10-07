@@ -1017,6 +1017,87 @@ static int checkFirmwareScreen() {
   return bad;
 }
 
+// ---------------------------------------------------------------------------
+// The help for the buttons on the legend page, and the longest banner.  KEY's four lines must stop
+// short of the BOOT column beside them, and the banner's text must fit its band with room at both ends.
+// ---------------------------------------------------------------------------
+static int checkButtonHelp() {
+  int bad = 0;
+  const int kBootX = 208, kGap = 10, kRow0 = 241, kRow1 = 297;  // BOOT's column, the least gap before it, the rows of the four lines
+  auto keyRightEdge = [&]() {  // the last column with ink left of the BOOT column
+    for (int x = kBootX - 1; x >= 8; x--)
+      if (anyInk(x, x + 1, kRow0, kRow1)) return x;
+    return -1;
+  };
+  UiModel m = baseModel();
+  m.page = PAGE_LEGEND;
+  renderModel(m);
+  const int right = keyRightEdge();
+  int lines = 0;
+  for (int i = 0; i < 4; i++) lines += anyInk(8, 150, 252 + i * 13 - 9, 252 + i * 13) ? 1 : 0;  // each of KEY's lines is there
+  const bool bootThere = anyInk(kBootX, kBootX + 60, kRow0, kRow1);
+  printf("legend buttons: KEY's lines end at x=%d, %d px short of the BOOT column (%d wanted), %d of 4 lines drawn\n", right,
+         kBootX - 1 - right, kGap, lines);
+  if (right < 0 || right > kBootX - 1 - kGap || lines != 4 || !bootThere) {
+    printf("  LEGEND: KEY's lines run into the BOOT column, or a line is missing\n");
+    bad++;
+  }
+  {  // negative control: a line that is too long is seen to reach the BOOT column
+    renderModel(m);
+    u8g2_SetFont(g_u, F_BODY);
+    ink(g_u);
+    txt(g_u, 8, 291, "hold: refresh now; hold 5 s: restart the clock");
+    const int r = keyRightEdge();
+    if (r <= kBootX - 1 - kGap) {
+      printf("  CHECK IS BLIND: a line of 46 characters did not reach the BOOT column (ends at x=%d)\n", r);
+      bad++;
+    } else {
+      printf("  negative control OK: a line that is too long ends at x=%d, inside the gap\n", r);
+    }
+  }
+
+  // The banner: a black band with white text, centred.  The columns its text takes up:
+  auto bannerText = [&](const char *text, int *left, int *rightEnd) {
+    UiModel t = baseModel();
+    setStr(t.toast, sizeof t.toast, text);
+    t.toastIcon = TOAST_NONE;
+    renderModel(t);
+    *left = *rightEnd = -1;
+    for (int x = 0; x < UI_WIDTH; x++) {
+      bool paperHere = false;
+      for (int y = kBottomTop + 2; y <= UI_HEIGHT - 3 && !paperHere; y++) paperHere = !inkAt(x, y);
+      if (paperHere) {
+        if (*left < 0) *left = x;
+        *rightEnd = x;
+      }
+    }
+  };
+  const int kMargin = 12;
+  int l = -1, r = -1;
+  bannerText(UI_TOAST_RESTART_HOLD, &l, &r);
+  printf("restart banner: \"%s\" takes x=%d..%d, margins %d and %d (%d wanted)\n", UI_TOAST_RESTART_HOLD, l, r, l, UI_WIDTH - 1 - r, kMargin);
+  if (l < kMargin || r > UI_WIDTH - 1 - kMargin || strlen(UI_TOAST_RESTART_HOLD) >= sizeof m.toast) {
+    printf("  BANNER: the restart text does not fit\n");
+    bad++;
+  }
+  bannerText(UI_TOAST_RESTARTING, &l, &r);
+  if (l < kMargin || r > UI_WIDTH - 1 - kMargin) {
+    printf("  BANNER: \"%s\" does not fit\n", UI_TOAST_RESTARTING);
+    bad++;
+  }
+  {  // negative control: the longest text a banner can be given does not fit, and the same measurement says so
+    const std::string longest(sizeof m.toast - 1, 'W');
+    bannerText(longest.c_str(), &l, &r);
+    if (l >= kMargin && r <= UI_WIDTH - 1 - kMargin) {
+      printf("  CHECK IS BLIND: %d wide letters measured as fitting (x=%d..%d)\n", (int)longest.size(), l, r);
+      bad++;
+    } else {
+      printf("  negative control OK: %d wide letters take x=%d..%d, past the margins\n", (int)longest.size(), l, r);
+    }
+  }
+  return bad;
+}
+
 int main() {
   mkdir("out", 0755);
   g_u = hostDisplayInit();
@@ -1088,6 +1169,12 @@ int main() {
   setStr(m.toast, sizeof m.toast, "Next track");
   m.toastIcon = TOAST_NEXT;
   snapshot("dash_toast_next", m);
+  {  // the banner while KEY is held for a restart (the longest one)
+    UiModel hold = m;
+    setStr(hold.toast, sizeof hold.toast, UI_TOAST_RESTART_HOLD);
+    hold.toastIcon = TOAST_NONE;
+    snapshot("dash_toast_restart", hold);
+  }
 
   // 7. Fahrenheit, rainy, stale weather
   m = baseModel();
@@ -1259,6 +1346,7 @@ int main() {
   bad += checkPageEdges();           // ...or a page runs off the screen...
   bad += checkMoonGlyph();           // ...or the moon is drawn wrongly...
   bad += checkRainGlyph();           // ...or the rain drop is not a drop, or not where its number is...
-  bad += checkFirmwareScreen();      // ...or the firmware-update screen's bar or text is off
+  bad += checkFirmwareScreen();      // ...or the firmware-update screen's bar or text is off...
+  bad += checkButtonHelp();          // ...or the legend's button help or the restart banner does not fit
   return bad ? 1 : 0;
 }

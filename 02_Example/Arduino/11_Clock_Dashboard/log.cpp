@@ -3,13 +3,34 @@
 #include <atomic>
 
 #if ARDUINO_USB_CDC_ON_BOOT && ARDUINO_USB_MODE
+#include <driver/gpio.h>
 #include <hal/usb_serial_jtag_ll.h>  // Serial is the chip's USB Serial/JTAG port
+#include <soc/gpio_struct.h>
+#include <soc/io_mux_reg.h>          // the two USB pins
 #endif
 
 volatile bool g_consoleOn = true;
 
 namespace {
 std::atomic<int> s_printing{0};  // tasks that are inside a LOGF right now
+}
+
+void consoleBegin() {
+#if ARDUINO_USB_CDC_ON_BOOT && ARDUINO_USB_MODE
+  // A console that was shut down left the two USB pins as plain outputs held low (that is how Serial.end()
+  // takes the port off the bus), and a restart that is not a power-on puts no pin back: the restart by KEY,
+  // the "set" command, a firmware update.  So let go of them before the port is started.  After a power-on
+  // they are not outputs and nothing is touched.
+  for (int pin : {USB_INT_PHY0_DM_GPIO_NUM, USB_INT_PHY0_DP_GPIO_NUM}) {
+    if ((GPIO.enable >> pin) & 1u) gpio_set_direction((gpio_num_t)pin, GPIO_MODE_DISABLE);
+  }
+#endif
+  Serial.begin(115200);  // (on the USB port this also switches the transceiver and its pull-up on)
+#if ARDUINO_USB_CDC_ON_BOOT
+  // Don't stall for the default 100 ms when no USB host is reading.  Not 0: with a
+  // zero timeout HWCDC::write() can spin forever if the host stops draining data.
+  Serial.setTxTimeoutMs(10);
+#endif
 }
 
 bool logBegin() {
