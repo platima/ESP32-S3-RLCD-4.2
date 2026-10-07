@@ -19,7 +19,7 @@
 // Not semver: 1.0 was the first release, and the number goes up by hand with every batch of changes that is
 // handed over to run on a board (README: "Versions").  Two builds of one version are told apart by the build
 // id next to it on the System info page, which changes whenever the program does.
-#define APP_VERSION "1.6"
+#define APP_VERSION "1.7"
 
 // The settings file the clock looks for in the root of the SD card, and writes (with every
 // setting explained) when the card has none.  Upper or lower case, it is FAT.
@@ -36,6 +36,10 @@
 #define FIRMWARE_DONE_SUFFIX ".done"
 // A freshly installed firmware is on trial: unless it has run this long, a reset puts the old one back.
 #define FIRMWARE_TRIAL_MS 60000UL
+
+// The copy of the power log that the clock leaves in the root of an SD card which is in the slot while it
+// starts (README: "Logging a battery run"); a file of that name on the card is replaced.
+#define POWER_LOG_FILE_NAME "ESP32-S3-RLCD-PowerLog.csv"
 
 // secrets.h is optional: copy secrets.example.h to secrets.h to build your WiFi name and password in.
 // Without it the clock starts with no network and takes them from the SD card settings file.
@@ -244,6 +248,15 @@
 // while switching it on, or use the SD card.  Saves a little power.  Not yet tried on the board.
 #ifndef CONSOLE_MODE
 #define CONSOLE_MODE "on"
+#endif
+
+// 1 = the clock keeps a log of its own power readings (the battery, the runtime estimate, the CPU clock, the radio's
+// share of the time): one line of CSV at each start and every 10 minutes, in the FAT partition of its flash, the
+// newest 0.5 to 1 MB of them.  A start with an SD card in copies the log to the card (POWER_LOG_FILE_NAME), and the
+// serial command "powerlog" prints it.  The first time, the partition is formatted.  A line costs a fraction of a
+// second of flash writing (README: "Logging a battery run").  Not yet tried on the board.
+#ifndef POWER_LOG
+#define POWER_LOG 0
 #endif
 
 // The audio chips on the board (a codec, a microphone ADC, an amplifier) are not used by the clock.  1 = at

@@ -182,6 +182,14 @@ void testFactory() {
   CHECK(b.userSet == 0);
   CHECK(sameSettings(b, Settings(), "build"));
   CHECK(dump(b) == dump(Settings()));
+
+  // The name of the power log's copy on an SD card is said in three places: config.h (which the clock uses), the
+  // help of the power_log setting in the settings file, and the README.
+  static char example[16384];
+  const bool rendered = renderExampleConfig(Settings(), "", example, sizeof example) > 0;
+  CHECK(rendered && strstr(example, POWER_LOG_FILE_NAME) != nullptr);
+  CHECK(readFile("../../README.md").find("`" POWER_LOG_FILE_NAME "`") != std::string::npos);
+  CHECK(rendered && strstr(example, "ESP32-S3-RLCD-PowerLog.txt") == nullptr);  // (the check can fail: a name that is nowhere)
 }
 
 // Does the README give `v` as the version: in its first lines, and as the first entry (the newest) of its

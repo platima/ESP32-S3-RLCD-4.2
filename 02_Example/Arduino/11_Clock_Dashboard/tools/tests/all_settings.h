@@ -35,4 +35,5 @@
     "cpu_mhz = 160\n"
     "cpu_idle_mhz = 40\n"
     "console = auto\n"
+    "power_log = on\n"
     "weather_interval_min = 30\n";

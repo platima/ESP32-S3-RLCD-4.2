@@ -3,6 +3,7 @@
 #include <Preferences.h>
 #include <math.h>
 
+#include "app_power_log.h"
 #include "build_defaults.h"
 #include "config.h"
 #include "fw_update.h"
@@ -88,6 +89,13 @@ void writeNote(int n) {  // 0 takes it away
   p.end();
 }
 
+// The last thing done with the card at start-up, once its settings are in force: a copy of the power log, when
+// the clock keeps one.  `logWasOn`: it did until this card was read (which may just have switched it off).
+void leaveCard(bool logWasOn) {
+  powerLogCopyToCard(logWasOn);
+  sdUnmount();
+}
+
 }  // namespace
 
 Settings cfgBuildDefaults() {
@@ -125,6 +133,7 @@ void cfgLoadFlash() {
 
 void cfgImportSdCard() {
   CfgStatus &st = g_cfgStatus;
+  const bool logWasOn = g_cfg.powerLog;  // (what the flash said, before a card has its say)
   st.carried = readNote();
   if (st.carried > 0) LOGF(TAG, "the start before this one changed %d setting(s) from a card and restarted before saying so", st.carried);
   const SdStatus mount = sdMount();
@@ -159,7 +168,7 @@ void cfgImportSdCard() {
     free(buf);
     st.sd = ok ? CfgStatus::SD_EXAMPLE_WRITTEN : CfgStatus::SD_WRITE_FAILED;
     LOGF(TAG, "%s: %s on the %s card", CONFIG_FILE_NAME, ok ? "example file written" : "could not write the example file", st.card);
-    sdUnmount();
+    leaveCard(logWasOn);
     return;
   }
 
@@ -167,8 +176,8 @@ void cfgImportSdCard() {
   char *data = nullptr;
   size_t len = 0;
   const bool read = sdReadFile(found, &data, &len, kMaxFileBytes);
-  sdUnmount();  // everything needed is in memory now
   if (!read) {
+    leaveCard(logWasOn);
     st.sd = CfgStatus::SD_READ_FAILED;
     LOGF(TAG, "could not read %s", found);
     return;
@@ -189,6 +198,7 @@ void cfgImportSdCard() {
     // (Settings that could not be saved are found changed again by the next start: nothing to carry.)
     if (st.savedToFlash) writeNote(st.carried + st.report.touched());
   }
+  leaveCard(logWasOn);  // (the settings are safe in flash by now, whatever the card does next)
 }
 
 void cfgAnnounced() {

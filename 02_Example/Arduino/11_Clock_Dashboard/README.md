@@ -1,7 +1,7 @@
 # 11_Clock_Dashboard
 
 A desk clock for the Waveshare ESP32-S3-RLCD-4.2: it joins your WiFi, sets the time over NTP, works out the
-time zone (including daylight saving) by itself, and shows everything on the reflective LCD. Version **1.6**
+time zone (including daylight saving) by itself, and shows everything on the reflective LCD. Version **1.7**
 ([what changed](#versions)).
 
 <img src="docs/dashboard.png" alt="Dashboard" width="560">
@@ -14,7 +14,7 @@ time zone (including daylight saving) by itself, and shows everything on the ref
 | **Analog clock** | Hour, minute and second hands; the second hand ticks exactly on the second (or sweeps, see `CLOCK_SWEEP_FPS`) |
 | **Weather** | Now, today's high/low, and the next two days (Open-Meteo, no API key), each with the **chance of rain** (a drop) and the **moon** (how much of it is lit). Sunrise, sunset, UV and wind when nothing is playing |
 | **Indoor** | Temperature and humidity from the on-board SHTC3, corrected for board self-heating |
-| **Battery** | Gauge and percentage, with a bolt in it while charging and a tick when full; **blinks below 20 %** (not while charging); an **estimate of the runtime left** on the Info page; a **gentle shutdown** before the cell is flat |
+| **Battery** | Gauge and percentage, with a bolt in it while charging and a tick when full; **blinks below 20 %** (not while charging); an **estimate of the runtime left** on the Info page; a **gentle shutdown** before the cell is flat; if you ask for it, a **log of its own power readings** for comparing settings |
 | **Spotify** | What is playing, progress, device and volume; the **KEY button** is the remote: 1 click play/pause, 2 clicks next, 3 clicks previous |
 | **Settings** | Units, time and date format, WiFi (and WiFi *off*), location, time zone, Spotify, battery and power options from a **file on an SD card**, read once at boot and kept in the clock's flash, so the card can come out again |
 | **Updates** | A new build can go in **from the SD card** (no cable, no WiFi needed): copy the exported `.ino.bin`, restart. It is checked first, installed into the second app slot, and kept only if it runs for a minute, else the old one returns |
@@ -25,7 +25,7 @@ time zone (including daylight saving) by itself, and shows everything on the ref
 > board's owner). Of what came with 1.3 and after, the owner has since seen three things work there: **a settings
 > file read from an SD card, a firmware installed from the card, and the processor slowed to 20 MHz** between syncs.
 > The rest, **the shutdown, how good the runtime estimate is, the clock drift measurement, the moon, the backup
-> network, most of [Saving power](#saving-power)**, as well as the Spotify linking flow, the charging indicator and the
+> network, most of [Saving power](#saving-power), the power log**, as well as the Spotify linking flow, the charging indicator and the
 > frame scheduler from earlier, has so far only been checked on a PC (renderer, fuzz test, simulations, tens of
 > thousands of host-side checks) and compiled for the board. [Not yet tried on the board](#not-yet-tried-on-the-board)
 > goes through it item by item, and [Troubleshooting](#troubleshooting) says what to look at if a first guess is off.
@@ -37,8 +37,9 @@ time zone (including daylight saving) by itself, and shows everything on the ref
    Scheme *16M Flash (3MB APP/9.9MB FATFS)*, **PSRAM *Disabled***, **CPU Frequency *80MHz (WiFi)***. Core: esp32 by
    Espressif **3.x** (built with 3.3.8). The clock needs neither the PSRAM nor the speed; together they cut the current
    to a third, see [Power](#power). (The sketch also sets 80 MHz itself, and the *Power and settings* page warns if the
-   PSRAM is switched on.) The sketch is about 1.46 MB (46 % of the 3 MB app partition), so the default 1.2 MB partition
-   scheme is too small.
+   PSRAM is switched on.) The sketch is about 1.5 MB (just under half of the 3 MB app partition), so the default 1.2 MB
+   partition scheme is too small. The 9.9 MB FAT part of this scheme is where the clock keeps its
+   [power log](#the-clocks-own-log), if you switch that on; otherwise it is not touched.
 2. **Libraries:** [U8g2](https://github.com/olikraus/u8g2) (a copy is in `01_Arduino_Libraries/U8g2`; copy it into your
    Arduino `libraries` folder or install it from the Library Manager) and **ArduinoJson 7.x** (Library Manager).
    WiFi, HTTPClient, WebServer, ESPmDNS, Preferences, Wire and the SD card driver come with the ESP32 core.
@@ -134,6 +135,7 @@ The last column is the name the same setting has in `config.h` / `secrets.h`, se
 | `cpu_mhz` | `80`, `160` or `240`; 80 is plenty for a clock (`80`) | `CPU_MHZ` |
 | `cpu_idle_mhz` | `off`, `80`, `40` or `20`: the CPU clock while the radio is off (`wifi = off`, or between the syncs of `wifi_mode = sync`); see [The idle clock](#the-idle-clock). **Not yet tried on the board** (`off`) | `CPU_IDLE_MHZ` (`0` = off) |
 | `console` | `on`, `auto` or `off`: the USB serial console (the log and the commands). `auto` runs it only while a computer is on the USB port, `off` not at all; shut down, it takes the USB port with it. See [The console](#the-console). **Not yet tried on the board** (`on`) | `CONSOLE_MODE` |
+| `power_log` | `on` / `off`. On: the clock writes its power readings into its own flash, one line at each start and every ten minutes, and copies the log to an SD card that is in the slot while it starts; see [The clock's own log](#the-clocks-own-log). The first time, the FAT partition of the flash is formatted. **Not yet tried on the board** (`off`) | `POWER_LOG` (`1` / `0`) |
 | `weather_interval_min` | Minutes between weather updates, 5 to 240 (`15`) | `WEATHER_INTERVAL_MIN` |
 
 (`reset_all`, described above, is not a setting but an instruction.) The accepted spellings of every value are in
@@ -775,6 +777,7 @@ The block's own clock is left on: the SDK's check for a computer on the port kee
 | CPU | 80 MHz, and less with `cpu_idle_mhz` while the radio is off |
 | Temperature sensor (SHTC3) | Asleep between readings (every 10 seconds) |
 | SD card | Read once at start-up and released; the card itself keeps its supply and idles (take it out to save that) |
+| The FAT partition of the flash | Not touched, unless `power_log` is on: then one short write every ten minutes, see [The clock's own log](#the-clocks-own-log) |
 | Clock chip (PCF85063), battery divider (300 kΩ), charger, protection, the 3.3 V converter | Always on, by design: microamps |
 | The display | On, it is the clock. It keeps its picture in deep sleep |
 
@@ -788,7 +791,9 @@ down, no statement about its state after power-on was found, which is why both a
 What a setting saves shows in how fast the battery goes down, and the clock measures that itself. To compare settings,
 make one run with each on the same cell and write the readings into [`docs/power-log.csv`](docs/power-log.csv), one
 line per reading. The sheet comes with a line for each of five runs worth making (the stock settings with and without
-WiFi, a middle ground, and the two lowest): copy a run's line for every reading you take of it.
+WiFi, a middle ground, and the two lowest): copy a run's line for every reading you take of it. Or let the clock do
+the writing: with `power_log = on` it keeps the same readings itself, every ten minutes, see
+[The clock's own log](#the-clocks-own-log) below.
 
 1. Charge the cell until the charger has finished and unplug it. Put the card in with the settings of the run, with
    every setting that differs between the runs written out (the clock keeps what an earlier card told it), and
@@ -819,6 +824,61 @@ WiFi, a middle ground, and the two lowest): copy a run's line for every reading 
 Edit it as text or in a spreadsheet (saved as CSV again). `bash tools/tests/run_tests.sh` reads the sheet: it names a
 line that has a field too few or too many, and a setting's column that holds something the settings file would not
 take.
+
+#### The clock's own log
+
+`power_log = on` (`#define POWER_LOG 1` in `secrets.h`) makes the clock write the readings down by itself: **one line
+ten seconds after every start, and one every ten minutes**, into a file in its own flash. The lines have the sheet's
+columns, by the same names and in the same order, so they can be pasted under the sheet's heading and one script reads
+both. It is off by default, **new in 1.7 and not yet tried on the board**.
+
+* **What it fills in.** Every column of the table that the clock can know: the firmware, the six settings, the
+  capacity (when it is set), the date and the time (only once the clock is trusted; the uptime is always there), the
+  CPU clock and why it is there, the radio's share, the battery, the three figures of the *Left* line and the current,
+  the memory and the frames. `music` is what Spotify said last (`playing`, `paused` or `none`; empty when no account is
+  linked). `battery_state` can also say `starting up` or `learning` (the first minutes after a start) and `none` (no
+  battery in use). The figures of the runtime estimate stay empty until it has its first one, 50 minutes after a
+  start, and while a charger shows; a fall too slow to measure is given as the rate it is, with `>30 d` for the time.
+  On the first line of every run `notes` says why the clock started, which is how the runs are told apart:
+  `start (power on)`, `start (restart)`, `start (after sleep)` (the low-battery shutdown, over), `start (brownout)`,
+  `start (watchdog)`, `start (after a crash)`, `start (reset over USB)` (an upload) or just `start`. `test`, `card`
+  and `meter_ma` stay empty: the clock has no name for a run, only looks at the card while it starts, and has no meter.
+* **Getting it out.** Put a FAT32 card in and restart the clock (hold KEY for five seconds). While it starts it copies
+  the log to the card as `ESP32-S3-RLCD-PowerLog.csv` (a file of that name is replaced), and the *Power and settings*
+  page says *copied to SD card at start (12 KB)*. That goes well with the runs above: the card that brings the settings
+  of the next run takes away the readings of the last one. The line of that very start is not in the copy yet, and a
+  log that is nearly full makes that start a few seconds longer (an estimate). A card whose settings file switches the
+  log off still gets the copy, that once. Or type **`powerlog`** in the serial console: it prints the whole log as
+  CSV. The clock stands still while it prints (a few seconds for a full log), and the console's own log lines are held
+  back so that none lands in the middle. `powerlog clear` forgets the log.
+* **How much it keeps.** The newest 0.5 to 1 MB: 3,300 to 6,700 lines of the usual length, three to six weeks of them.
+  The log is two files; when the newer one reaches half a megabyte the older one is deleted and the newer takes its
+  place, so the oldest half goes at once and nothing is ever written out a second time. A firmware that logs other
+  columns starts a new file under its own heading, and the copy then has a second heading where the columns change.
+* **Where it shows.** A *Log* row on the *Power and settings* page: `412 KB, 37 lines this run, 4 min ago`, or what is
+  wrong (see [Troubleshooting](#troubleshooting)). After three lines in a row that could not be written the log stops
+  until the next start, and a line that fails is not tried again before the next one is due.
+* **What a line costs.** A line is about 160 bytes, but flash is rewritten 4 KB at a time: the sector with the end of
+  the file and the one with the directory entry (FAT keeps the file's length there) are each erased (about 45 ms) and
+  written (about 10 ms), while the flash chip draws some 20 mA. About every 25th line begins a new 4 KB of the file
+  and rewrites both copies of the allocation table as well, and about every 7th the wear levelling moves a sector.
+  That makes 0.1 to 0.3 seconds a line with the processor busy instead of idle: roughly **5 mA·s a line, 0.008 mA on
+  average** at six lines an hour, under a thousandth of a clock that draws 10 mA. Nothing happens in between: the
+  partition is mounted once, at start-up, and no file is open between two lines. The flash does not wear out over
+  it either (some 300 sector erases a day, spread over 2,500 sectors that take 100,000 each). All of this is worked
+  out from the datasheet of a typical 16 MB flash chip and the sources of the file system, **not measured**; `power`
+  in the serial console says how long the last line and the slowest took to write on your board, and the serial log
+  says it for every line.
+* **What it touches.** The log lives in the FAT partition of the flash (`ffat`: the 9.9 MB of the partition scheme in
+  the [Quick start](#quick-start)), which nothing else in the sketch uses. A clock whose `power_log` was never on
+  never reads or writes it. The first time, the partition is formatted if it holds no FAT file system (about half a
+  second; anything else that was in it is gone). While the log is on the partition stays mounted, which takes about
+  13 KB of memory (by the sizes of the file system's structures, not measured): the *Uptime* line, and the log's own
+  `free_kb`, read that much lower than in a run without the log. A line is written right after a second has begun, so
+  that the flash is done before the next second is drawn; a write that takes too long would show as one second that
+  stutters. Between two lines nothing is waiting to be written, so a restart, the shutdown or a pulled battery lose
+  nothing; a power cut in the very tenth of a second in which a line is written can cost the lines that share its
+  4 KB of the file (FAT has no journal).
 
 ## Troubleshooting
 
@@ -855,6 +915,10 @@ take.
 | Gauge says full on USB with no battery | Say `battery = none` in the settings |
 | The gauge stops at 93 to 97 % when the cell is full (a tester says 4.20 V), or the icon never says *full* | The ADC reads a little low. Calibrate it: `batcal 4.20` in the serial console, or `battery_calibration` in the settings, see [Calibrating the voltage](#calibrating-the-voltage) |
 | *Battery empty* screen but the cell is charged | Hold KEY for 3 seconds on that screen to run anyway; check `battery_cutoff_v`; or `low_battery_shutdown = off` |
+| The *Log* row says *OFF: no ffat partition* | `power_log = on`, but the firmware was built with a partition scheme that has no FAT partition. Choose *16M Flash (3MB APP/9.9MB FATFS)* as in the [Quick start](#quick-start) and upload over USB (the partition table does not come with a firmware from the SD card) |
+| The *Log* row says *OFF: the flash partition will not mount* | The FAT partition could be neither mounted nor formatted; nothing is logged in this run. The serial log has the error code, right after the start |
+| The *Log* row says *last write FAILED*, or *STOPPED after 3 write errors* | A line could not be written (the next is tried ten minutes later), and after three in a row the log gives up until the next restart. What is in it stays: `powerlog` in the serial console prints it. If it happens again after a restart, `powerlog clear` starts the log afresh |
+| No `ESP32-S3-RLCD-PowerLog.csv` on the card | The log is copied only while the clock starts (hold KEY for five seconds with the card in), only with `power_log = on` (or just switched off by that card), and only once it has a line. The *Power and settings* page says what happened: *copied to SD card at start*, or *NOT copied to SD: card write error* (a card that is full or write-protected: the log is still in the clock, try another card) |
 | *asleep (sync mode)* and no Spotify | Expected with `wifi_mode = sync`: press KEY once, or open the *Now Playing* page, and the radio comes on, see [Saving power](#saving-power) |
 | *No known WiFi in range* | `wifi_mode = sync` and none of the clock's networks answered. It looks again every 2 minutes, later every 5, and at once when any button is pressed. If the network is right there, check the name (it has to match exactly) |
 | *No WiFi, trying again later*, the Info page says *cannot join* | `wifi_mode = sync`: the network is there but the clock cannot get in (the password?), or it joins and nothing gets done. It tries again after 1, 2, 5, 10 and then every 15 minutes; KEY tries now |
@@ -872,7 +936,9 @@ take.
 
 Serial console commands: `status`, `battery`, `batcal V` (calibrate the battery voltage to what a tester shows, see
 [Calibrating the voltage](#calibrating-the-voltage)), `power` (the CPU clock and why it is there, the radio's share of the
-time, the console, the buttons, the audio chips), `config` (every setting, passwords hidden), `set name = value` (one
+time, the console, the buttons, the audio chips, the power log and how long its last line took to write), `powerlog`
+(the power log as CSV; `powerlog clear` forgets it, see [The clock's own log](#the-clocks-own-log)), `config` (every
+setting, passwords hidden), `set name = value` (one
 setting, by the name and with the rules of the SD card file: checked, saved to flash, then a restart; `set name =`
 forgets it), `timing`, `refresh`, `page N`, `invert`, `unlink`, `sleeptest` (draws the *Battery empty* screen and goes
 into the low-battery deep sleep without the battery being low: the way to try the shutdown on the bench; KEY or five
@@ -934,6 +1000,16 @@ since (7 October 2026) noted item by item:
   measured on the rendered screen; the restart itself, and the card being read after it, are not;
 * the audio chips' power-down at start-up and the pull-downs on their I2S lines (see
   [What is switched off](#what-is-switched-off));
+* the power log (`power_log = on`, new in 1.7): **all of it.** What a line holds, when one is due and what is done
+  with the two files (the heading, the cap, reading the log back, writes that fail) run on a PC against a made-up file
+  system, the file calls themselves against a folder of the PC, and the sketch compiles. Never run on the board: a FAT
+  file system in the clock's own flash (the `ffat` partition under the IDF's wear levelling) and mounting it, formatting
+  that partition the first time, how long a line really takes to write and whether a second stutters for it, writing
+  to the flash while the processor runs at 20 or 40 MHz, the memory it takes, the copy to the SD card (writing to a
+  card is untried as a whole, see the first item), the `powerlog` commands, and the note that says why the clock
+  started. What a line costs is an estimate from a datasheet, see [The clock's own log](#the-clocks-own-log). **The
+  first thing to look at** is the *Log* row of the *Power and settings* page a minute after a start with the log on:
+  it should say `1 KB, 1 line this run, 50 s ago`, and `power` in the serial console how long that line took to write;
 * from earlier: the Spotify linking flow, the charging indicator, `PIN_CHARGE_STATUS`.
 
 ## Files
@@ -958,6 +1034,7 @@ since (7 October 2026) noted item by item:
 | `button_edges.*` | The buttons by interrupt, used with an idle clock |
 | `charge.h` | Charging / discharging / full from how the battery voltage moves |
 | `battery_est.h`, `low_battery.h` | Runtime left; when to shut down and when to start again |
+| `power_log.h`, `app_power_log.*` | The power log: the line of CSV, when one is due, the two files and their cap (pure logic, host-tested on a made-up file system), and the flash partition, the copy to the SD card and the serial commands |
 | `drift.h`, `moon.h`, `datefmt.h` | Clock accuracy measurement, moon phase and its glyph, date formats |
 | `wifi_pick.h` | Which WiFi network to try next (main, backup) and when to look for the main one again |
 | `fw_logic.h`, `fw_update.h/.cpp` | Firmware update from the SD card: which file is accepted and the two passes over it, check then write (pure logic, host-tested), and the card, flash and trial minute |
@@ -992,7 +1069,10 @@ build the sketch.
   what came with 1.3 and after (`test_features`): the settings file parser (what people type, bad values, reset, UTF-16, 3000 fuzzed
   files), the example file (it parses back to the same settings, hides passwords, and matches `docs/`), the moon against
   28 published phases, the date formats, the runtime estimate, the shutdown guard and the clock drift measurement on
-  simulated data. `test_radio` covers the power logic: the radio sessions of `wifi_mode = sync` driven by hand and by a
+  simulated data; and the power log: its heading against `docs/power-log.csv`, the column of every setting through
+  the settings parser, the two files on a made-up file system (the cap, another firmware's columns, writes that fail
+  or stop half way) and again in a real folder through the calls the clock makes, and the rows of the *Power and
+  settings* page. `test_radio` covers the power logic: the radio sessions of `wifi_mode = sync` driven by hand and by a
   model of the network task over simulated days (a good network, one that is away, one that refuses, no internet, music
   with and without `spotify_live`), the same rules weeks into the run (where 32 bits of milliseconds wrap), the CPU
   clock and console policies, and the frame planner across clock changes. A fourth program (`test_builddefaults`) is built four ways, with `override_*.h` standing in for a
@@ -1001,7 +1081,7 @@ build the sketch.
   (refused and reported) and values on the limits; it also checks that each macro is documented here and in
   `secrets.example.h`, and that the version in `config.h` is the one this README gives. While they were written, the tests were checked by breaking the code in 50 ways and watching
   them fail (and the build defaults in 70 more, the power logic in 80, the button and settings code that came with it
-  in 23, the banner about a card's settings in 17, the battery rules of 1.5 in 19). Set
+  in 23, the banner about a card's settings in 17, the battery rules of 1.5 in 19, the power log in 113). Set
   `ARDUINOJSON_SRC` to ArduinoJson's `src` folder if it is not in `~/Arduino/libraries`.
 * **`tools/tests/battery_sim.cpp`** simulates whole battery discharges to choose the constants of `battery_est.h` (see
   the file header: `g++ -std=c++17 -O2 -I../.. battery_sim.cpp`).
@@ -1019,6 +1099,17 @@ build the sketch.
 `APP_VERSION` in `config.h`. It is not semver: the number goes up by hand with each batch of changes that is handed
 over to run on a board. The *System info* page shows it together with a build id, which tells two builds of one version
 apart (*Which build is running?* under [Updating the firmware from the SD card](#updating-the-firmware-from-the-sd-card)).
+
+**1.7** (8 October 2026)
+
+* **The clock keeps its own power log** (`power_log = on`; off by default): a line of CSV in its flash ten seconds
+  after every start and every ten minutes, with the columns of [`docs/power-log.csv`](docs/power-log.csv), so that a
+  battery run no longer has to be written down by hand. A start with an SD card in copies the log to the card as
+  `ESP32-S3-RLCD-PowerLog.csv`, `powerlog` in the serial console prints it, and the *Power and settings* page has a
+  *Log* row. The newest 0.5 to 1 MB are kept; a line costs a fraction of a second of flash writing. See
+  [The clock's own log](#the-clocks-own-log). **Not yet tried on the board**: it is the first use of the flash's FAT
+  partition, which is formatted the first time the log is switched on. Nothing changes for a clock that leaves it
+  off.
 
 **1.6** (8 October 2026)
 

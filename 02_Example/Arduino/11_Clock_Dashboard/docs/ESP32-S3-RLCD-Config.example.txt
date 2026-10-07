@@ -167,6 +167,14 @@
 # a firmware, restart the clock with KEY held down (the console then stays on for that run),
 # or hold BOOT while switching it on, or use the SD card.
 # console = on
+#
+# on or off.  On: the clock writes its own power readings (the battery, the runtime estimate,
+# the CPU clock, the radio's share of the time) into its flash as one line of CSV at each start
+# and every 10 minutes, for comparing settings by how fast the battery goes down.  A start
+# with an SD card in copies the log to the card as ESP32-S3-RLCD-PowerLog.csv.  The newest
+# 0.5 to 1 MB are kept (weeks).  The first time, the flash partition for it is formatted.
+# See the README.
+# power_log = off
 
 # ---- Weather -----------------------------------------------------
 #

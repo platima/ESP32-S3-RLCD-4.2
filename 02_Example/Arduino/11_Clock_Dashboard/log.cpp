@@ -13,6 +13,7 @@ volatile bool g_consoleOn = true;
 
 namespace {
 std::atomic<int> s_printing{0};  // tasks that are inside a LOGF right now
+std::atomic<bool> s_hold{false};  // LOGF lines are dropped for the moment (consoleHold)
 }
 
 void consoleBegin() {
@@ -35,12 +36,19 @@ void consoleBegin() {
 
 bool logBegin() {
   s_printing.fetch_add(1);
-  if (g_consoleOn) return true;
+  if (g_consoleOn && !s_hold.load()) return true;
   s_printing.fetch_sub(1);
   return false;
 }
 
 void logEnd() { s_printing.fetch_sub(1); }
+
+void consoleHold(bool hold) {
+  s_hold.store(hold);
+  if (hold) {
+    for (int i = 0; i < 200 && s_printing.load() > 0; i++) delay(5);  // the line another task is in the middle of
+  }
+}
 
 void consoleShutDown() {
   if (!g_consoleOn) return;

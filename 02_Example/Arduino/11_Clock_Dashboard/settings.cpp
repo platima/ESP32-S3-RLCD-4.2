@@ -184,10 +184,18 @@ const Def kDefs[] = {
      "not.  A console that is shut down saves a little power, and the USB port is dead: to upload\n"
      "a firmware, restart the clock with KEY held down (the console then stays on for that run),\n"
      "or hold BOOT while switching it on, or use the SD card."},
+    {"power_log", "plog", T_BOOL, OFF(powerLog), 0, 0, 0, nullptr, false, "Power",
+     "on or off.  On: the clock writes its own power readings (the battery, the runtime estimate,\n"
+     "the CPU clock, the radio's share of the time) into its flash as one line of CSV at each start\n"
+     "and every 10 minutes, for comparing settings by how fast the battery goes down.  A start\n"
+     "with an SD card in copies the log to the card as ESP32-S3-RLCD-PowerLog.csv.  The newest\n"
+     "0.5 to 1 MB are kept (weeks).  The first time, the flash partition for it is formatted.\n"
+     "See the README."},
     {"weather_interval_min", "wxint", T_INT, OFF(weatherIntervalMin), 0, 5, 240, nullptr, false, "Weather",
      "Minutes between weather updates, 5 to 240 (default 15)."},
 };
 const size_t kDefCount = sizeof kDefs / sizeof kDefs[0];
+// (32 settings fill the mask: the next one needs a wider `userSet`, and wider shifts where it is used)
 static_assert(sizeof kDefs / sizeof kDefs[0] <= 32, "userSet is a 32 bit mask");
 
 struct Alias {
@@ -209,6 +217,7 @@ const Alias kAliases[] = {
     {"serial", "console"},          {"serial_console", "console"},   {"usb_console", "console"},
     {"console_mode", "console"},    {"log", "console"},
     {"spotify_follow", "spotify_live"}, {"spotify_stay_connected", "spotify_live"},
+    {"battery_log", "power_log"},   {"log_power", "power_log"},
     {"backup_ssid", "wifi_backup_ssid"},          {"backup_wifi", "wifi_backup_ssid"},
     {"backup_network", "wifi_backup_ssid"},       {"wifi_ssid2", "wifi_backup_ssid"},
     {"ssid2", "wifi_backup_ssid"},                {"second_ssid", "wifi_backup_ssid"},

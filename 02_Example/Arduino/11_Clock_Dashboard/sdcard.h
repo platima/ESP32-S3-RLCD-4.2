@@ -43,3 +43,11 @@ bool sdSeek(int fd, uint32_t offset);
 void sdClose(int fd);
 // Renames a file; an existing file with the new name is replaced.
 bool sdRename(const char *from, const char *to);
+
+// For the copy of the power log, which is written in pieces: a new file (one of that name is replaced) and a
+// handle to write it with (-1 if it cannot be made), the pieces, and the end, which flushes and closes it.
+// sdCommit() always closes; true only if the file is safely on the card.
+int sdCreate(const char *name);
+bool sdWrite(int fd, const void *buf, size_t len);  // true if every byte was taken
+bool sdCommit(int fd);
+bool sdRemove(const char *name);

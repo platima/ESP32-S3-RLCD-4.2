@@ -18,6 +18,7 @@
 #include "fw_logic.h"
 #include "low_battery.h"
 #include "moon.h"
+#include "power_log.h"
 #include "sd_layout.h"
 #include "settings.h"
 #include "tz_table.h"
@@ -85,8 +86,8 @@ std::string dump(const Settings &s) {
 void testSettingsTable() {
   section("settings table");
   const size_t n = settingCount();
-  CHECK(n == 31);
-  CHECK(n <= 32);  // userSet is a 32 bit mask
+  CHECK(n == 32);
+  CHECK(n <= 32);  // userSet is a 32 bit mask, and with 32 settings it is full
   CHECK_STR(settingKey(n), "");
   CHECK_STR(settingNvsKey(n), "");
   for (size_t i = 0; i < n; i++) {
@@ -681,8 +682,14 @@ void checkExample(const Settings &cur, const char *label) {
   printf("  (%s)\n", label);
   static char buf[16384];
   const size_t n = renderExampleConfig(cur, "Measured drift: +1.2 s/day over 3 days", buf, sizeof buf);
-  CHECK(n > 2000 && n < 9000);
+  CHECK(n > 2000 && n < 11000);
   CHECK(n == strlen(buf));
+  {  // the clock writes it with Windows line ends into a buffer of 12 KB (kExampleCap in app_settings.cpp): it has to fit
+    static char onCard[12 * 1024];
+    const size_t m = renderExampleConfig(cur, "Measured drift: +1.2 s/day over 3 days", onCard, sizeof onCard, true);
+    CHECK(m > n && m + 1024 < sizeof onCard);  // ... with a kilobyte to spare for the settings still to come
+    CHECK(renderExampleConfig(cur, "", onCard, n, true) == 0);  // (it can fail: a buffer that is too small gets nothing)
+  }
   const std::string text(buf, n);
   CHECK(text.back() == '\n');
   CHECK(text.find('\r') == std::string::npos);
@@ -1873,6 +1880,21 @@ void testPowerSettings() {
     CHECK(!apply("spotify_live = sometimes", off).s.spotifyLive && apply("spotify_live = sometimes", off).r.bad == 1);
   }
 
+  // the power log: off unless it is asked for (it writes to the flash)
+  CHECK(!d.powerLog);
+  CHECK_STR(settingNvsKey(idx("power_log")), "plog");
+  CHECK(apply("power_log = on").s.powerLog && apply("power_log = on").r.problems() == 0);
+  CHECK(apply("Power Log: yes").s.powerLog && apply("battery_log = on").s.powerLog && apply("log-power = 1").s.powerLog);
+  {
+    Settings on;
+    on.powerLog = true;
+    CHECK(!apply("power_log = off", on).s.powerLog && !apply("POWERLOG = no", on).s.powerLog);
+    CHECK(apply("power_log = hourly", on).s.powerLog && apply("power_log = hourly", on).r.bad == 1);  // a value it does not know changes nothing
+    CHECK(apply("log = off", on).s.powerLog && apply("log = off", on).s.console == CONSOLE_OFF);      // "log" alone is the console's name
+    CHECK(settingIsUserSet(apply("power_log = off", on).s, idx("power_log")));                        // the 32nd bit of the mask is a bit like the others
+    CHECK(!settingIsUserSet(apply("power_log =", apply("power_log = on").s).s, idx("power_log")));
+  }
+
   // they come out of the example file, with their help text
   static char buf[16384];
   Settings cur;
@@ -1880,9 +1902,11 @@ void testPowerSettings() {
   cur.cpuIdle = CPUIDLE_20;
   cur.console = CONSOLE_AUTO;
   cur.spotifyLive = false;
+  cur.powerLog = true;
   CHECK(renderExampleConfig(cur, "", buf, sizeof buf) > 0);
   CHECK(strstr(buf, "# wifi_mode = sync") != nullptr && strstr(buf, "# cpu_idle_mhz = 20") != nullptr);
   CHECK(strstr(buf, "# console = auto") != nullptr && strstr(buf, "# spotify_live = off") != nullptr);
+  CHECK(strstr(buf, "# power_log = on") != nullptr && strstr(buf, "ESP32-S3-RLCD-PowerLog.csv") != nullptr);
   CHECK(strstr(buf, "off, 80, 40 or 20:") != nullptr && strstr(buf, "20 or 10") == nullptr);  // the help does not offer 10 MHz
   const Applied back = apply(buf);  // and read back, they give the same
   CHECK(back.s.wifiMode == WIFIMODE_ALWAYS);  // (everything commented out: nothing is applied)
@@ -2950,6 +2974,1134 @@ void testPowerLog() {
   CHECK(powerLogProblems("", doc, false) == 1 && powerLogProblems("\n", doc, false) >= 1);  // nothing at all
 }
 
+// ---------------------------------------------------------------------------
+// The power log the clock writes by itself (power_log.h): the sheet's columns, filled in by the firmware
+// ---------------------------------------------------------------------------
+
+// The settings and the readings of the README's own examples ("Logging a battery run").
+Settings sampleLogSettings() {
+  return apply("wifi_mode = sync\nwifi_power_save = max\ncpu_idle_mhz = 20\nspotify_live = off\nconsole = auto\nbattery_capacity_mah = 2500\n").s;
+}
+
+powerlog::Reading sampleReading(const Settings &s) {
+  powerlog::Reading r;
+  r.version = "1.7";
+  r.buildId = "3f9a12c";
+  r.settings = &s;
+  r.spotify = SPOTIFY_PLAYING;
+  r.timeValid = true;
+  r.local.tm_year = 2026 - 1900;
+  r.local.tm_mon = 9;
+  r.local.tm_mday = 8;
+  r.local.tm_hour = 14;
+  r.local.tm_min = 30;
+  r.local.tm_sec = 59;
+  r.uptimeSec = 3 * 3600 + 12 * 60 + 47;
+  r.cpuMhz = 20;
+  r.clockReason = "idle";
+  r.radioSync = true;
+  r.radioOnPermille = 8;
+  r.radioSessions = 96;
+  r.batteryPresent = true;
+  r.batteryVolts = 4.092f;
+  r.charge = CHARGE_DISCHARGING;
+  r.chargeReady = true;
+  r.estimate.state = battest::Estimate::READY;
+  r.estimate.pctPerHour = 1.2f;
+  r.estimate.hoursLeft = 72.0f;
+  r.estimate.windowMin = 300;
+  r.estimate.avgMa = 30.0f;
+  r.freeHeapBytes = 187 * 1024 + 500;
+  r.framesSent = 11520;
+  r.framesLate = 2;
+  r.framesWorstMs = 61;
+  return r;
+}
+
+std::string logLine(const powerlog::Reading &r) {
+  char line[powerlog::kMaxLine];
+  const size_t n = powerlog::formatLine(r, line, sizeof line);
+  return std::string(line, n);
+}
+
+// The fields of a line as the clock wrote it (its line end taken off).
+std::vector<std::string> logFields(const std::string &line) {
+  std::string l = line;
+  while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
+  return csvFields(l);
+}
+
+// One field of the line a reading makes, by its column.
+std::string logField(const powerlog::Reading &r, powerlog::Column c) {
+  const std::vector<std::string> f = logFields(logLine(r));
+  return f.size() == (size_t)powerlog::kColumnCount ? f[c] : std::string("<") + std::to_string(f.size()) + " fields>";
+}
+
+void testPowerLogLine() {
+  section("power log: the heading and the line");
+  using namespace powerlog;
+  const std::string readme = readFile("../../README.md"), sheet = readFile("../../docs/power-log.csv");
+
+  // the heading is the sheet's, column for column: a line pastes under the sheet's heading, one script reads both
+  char head[kMaxLine];
+  const size_t headLen = formatHeader(head, sizeof head);
+  CHECK(headLen > 0 && headLen == strlen(head) && headLen < kMaxLine);
+  const std::string sheetHead = sheet.substr(0, sheet.find_first_of("\r\n"));
+  const std::vector<std::string> names = csvFields(sheetHead);
+  CHECK(names.size() == (size_t)kColumnCount);
+  for (size_t i = 0; i < names.size() && i < (size_t)kColumnCount; i++) {
+    if (names[i] != columnName((int)i)) printf("  column %zu is '%s' in docs/power-log.csv and '%s' in power_log.h\n", i, names[i].c_str(), columnName((int)i));
+    CHECK(names[i] == columnName((int)i));
+  }
+  CHECK(std::string(head) == sheetHead + "\r\n");
+  CHECK_STR(columnName(-1), "");
+  CHECK_STR(columnName(kColumnCount), "");
+  {  // a buffer that is too small gets no heading rather than part of one
+    char small[kMaxLine];
+    CHECK(formatHeader(small, headLen) == 0 && formatHeader(small, headLen + 1) == headLen && formatHeader(small, 0) == 0);
+  }
+
+  // the README's own example of every column, as the one line the clock would write of it
+  const Settings s = sampleLogSettings();
+  const Reading r = sampleReading(s);
+  const std::string line = logLine(r);
+  CHECK_STR(line.c_str(), ",1.7 3f9a12c,on,sync,max,20,off,auto,2500,,playing,2026-10-08,14:30,0d 3h 12m,20 idle,0.8,96,4.092,87.0,discharging,"
+                          "3 d 0 h,1.20,300,30.0,,187,11520,2,61,\r\n");
+  CHECK(line.size() >= 140 && line.size() <= 170);  // (the README's "3,000 to 7,000 lines" rests on a line of about this length)
+  for (const char *example : {"`0d 3h 12m`", "`20 idle`", "`0.8` and `96`", "`4.092` and `87.0`", "`3 d 0 h`, `1.20` and `300`", "`2026-10-08`", "`14:30`"}) {
+    if (readme.find(example) == std::string::npos) printf("  the README no longer gives %s as an example\n", example);
+    CHECK(readme.find(example) != std::string::npos);
+  }
+  // ... and the sheet's own checks take the clock's heading and line as they take the sheet
+  CHECK(powerLogProblems(std::string(head) + line, readme, true) == 0);
+  CHECK(powerLogProblems(std::string(head) + line.substr(1), readme, false) == 1);  // (they can fail: the same line, a field short)
+  {  // a buffer that is too small gets no line
+    char small[kMaxLine];
+    CHECK(formatLine(r, small, line.size()) == 0 && formatLine(r, small, line.size() + 1) == line.size() && formatLine(r, small, 0) == 0);
+    for (size_t cap = 1; cap < line.size(); cap += 7) CHECK(formatLine(r, small, cap) == 0);
+  }
+
+  // the columns of the settings hold what the settings file has, for every choice of every one of them: the
+  // text is the setting's own, and the settings parser takes it back
+  auto col = [](const char *name) {
+    for (int c = 0; c < kColumnCount; c++)
+      if (!strcmp(columnName(c), name)) return c;
+    return -1;
+  };
+  int combos = 0;
+  std::string all = head;
+  for (int wifi = 0; wifi < 2; wifi++)
+    for (int mode : {WIFIMODE_ALWAYS, WIFIMODE_SYNC})
+      for (int save : {WIFISAVE_NORMAL, WIFISAVE_MAX})
+        for (int idle : {CPUIDLE_OFF, CPUIDLE_80, CPUIDLE_40, CPUIDLE_20})
+          for (int live = 0; live < 2; live++)
+            for (int console : {CONSOLE_ON, CONSOLE_AUTO, CONSOLE_OFF}) {
+              Settings t;
+              t.wifi = wifi != 0;
+              t.wifiMode = (uint8_t)mode;
+              t.wifiPowerSave = (uint8_t)save;
+              t.cpuIdle = (uint8_t)idle;
+              t.spotifyLive = live != 0;
+              t.console = (uint8_t)console;
+              const std::string l = logLine(sampleReading(t));
+              const std::vector<std::string> f = logFields(l);
+              CHECK(f.size() == (size_t)kColumnCount);
+              if (f.size() != (size_t)kColumnCount) continue;
+              for (const char *name : {"wifi", "wifi_mode", "wifi_power_save", "cpu_idle_mhz", "spotify_live", "console"}) {
+                const std::string &text = f[(size_t)col(name)];
+                CHECK(!text.empty() && text == fmt(t, idx(name)));
+                const Applied back = apply(std::string(name) + " = " + text + "\n", Settings());
+                if (back.r.problems() != 0 || fmt(back.s, idx(name)) != fmt(t, idx(name))) printf("  %s: '%s' does not read back\n", name, text.c_str());
+                CHECK(back.r.problems() == 0 && fmt(back.s, idx(name)) == fmt(t, idx(name)));
+              }
+              CHECK(f[C_BATTERY_CAPACITY_MAH].empty());  // (no capacity set in these)
+              all += l;
+              combos++;
+            }
+  CHECK(combos == 192);
+  CHECK(powerLogProblems(all, readme, true) == 0);
+  CHECK(col("wifi") == C_WIFI && col("console") == C_CONSOLE && col("cpu_idle_mhz") == C_CPU_IDLE_MHZ && col("notes") == C_NOTES);
+  {  // settingText: by the setting's name, and nothing for a name that is no setting
+    char t[16] = "x";
+    settingText(s, "wifi_mode", t, sizeof t);
+    CHECK_STR(t, "sync");
+    settingText(s, "wifi_modes", t, sizeof t);
+    CHECK_STR(t, "");
+    settingText(s, "wifi_ssid", t, 0);  // no room at all: nothing is written
+  }
+
+  // what the clock does not know stays empty: a reading with nothing in it
+  {
+    const std::vector<std::string> f = logFields(logLine(Reading()));
+    CHECK(f.size() == (size_t)kColumnCount);
+    if (f.size() == (size_t)kColumnCount) {
+      for (int c : {C_TEST, C_FIRMWARE, C_WIFI, C_WIFI_MODE, C_WIFI_POWER_SAVE, C_CPU_IDLE_MHZ, C_SPOTIFY_LIVE, C_CONSOLE, C_BATTERY_CAPACITY_MAH,
+                    C_CARD, C_MUSIC, C_DATE, C_TIME, C_CLOCK_SHOWN, C_RADIO_ON_PCT, C_RADIO_SESSIONS, C_BATTERY_V, C_BATTERY_PCT, C_LEFT,
+                    C_PCT_PER_HOUR, C_OVER_MIN, C_CLOCK_MA, C_METER_MA, C_NOTES}) {
+        if (!f[(size_t)c].empty()) printf("  %s is '%s' for a reading that knows nothing\n", columnName(c), f[(size_t)c].c_str());
+        CHECK(f[(size_t)c].empty());
+      }
+      CHECK(f[C_UPTIME] == "0d 0h 0m" && f[C_BATTERY_STATE] == "none" && f[C_FREE_KB] == "0" && f[C_FRAMES_SENT] == "0" && f[C_FRAMES_LATE] == "0" &&
+            f[C_FRAMES_WORST_MS] == "0");
+    }
+    // the four columns only a person can fill are empty in the full reading too
+    for (Column c : {C_TEST, C_CARD, C_METER_MA}) CHECK(logField(r, c).empty());
+    CHECK(logField(r, C_NOTES).empty());
+  }
+
+  // the date and the time only when the clock is trusted
+  {
+    Reading t = r;
+    t.timeValid = false;
+    CHECK(logField(t, C_DATE).empty() && logField(t, C_TIME).empty());
+    CHECK(logField(r, C_DATE) == "2026-10-08" && logField(r, C_TIME) == "14:30");
+    t = r;
+    t.local.tm_mon = 0;
+    t.local.tm_mday = 3;
+    t.local.tm_hour = 7;
+    t.local.tm_min = 5;
+    CHECK(logField(t, C_DATE) == "2026-01-03" && logField(t, C_TIME) == "07:05");
+  }
+  // the uptime as the System info page has it
+  {
+    Reading t = r;
+    for (const auto &c : std::vector<std::pair<uint32_t, const char *>>{{0, "0d 0h 0m"}, {59, "0d 0h 0m"}, {60, "0d 0h 1m"}, {86399, "0d 23h 59m"},
+                                                                         {90061, "1d 1h 1m"}, {4294967295u, "49710d 6h 28m"}}) {
+      t.uptimeSec = c.first;
+      if (logField(t, C_UPTIME) != c.second) printf("  uptime %u s gives '%s'\n", (unsigned)c.first, logField(t, C_UPTIME).c_str());
+      CHECK(logField(t, C_UPTIME) == c.second);
+    }
+  }
+  // the CPU clock, with the reason when there is an idle clock to give one
+  {
+    Reading t = r;
+    CHECK(logField(t, C_CLOCK_SHOWN) == "20 idle");
+    t.cpuMhz = 80;
+    t.clockReason = "USB attached";
+    CHECK(logField(t, C_CLOCK_SHOWN) == "80 USB attached");
+    t.clockReason = "";
+    CHECK(logField(t, C_CLOCK_SHOWN) == "80");
+    t.cpuMhz = 240;
+    CHECK(logField(t, C_CLOCK_SHOWN) == "240");
+  }
+  // the radio's share only in sync mode
+  {
+    Reading t = r;
+    t.radioSync = false;
+    CHECK(logField(t, C_RADIO_ON_PCT).empty() && logField(t, C_RADIO_SESSIONS).empty());
+    t.radioSync = true;
+    t.radioOnPermille = 1000;
+    t.radioSessions = 0;
+    CHECK(logField(t, C_RADIO_ON_PCT) == "100.0" && logField(t, C_RADIO_SESSIONS) == "0");
+    t.radioOnPermille = 35;
+    t.radioSessions = 4294967295u;
+    CHECK(logField(t, C_RADIO_ON_PCT) == "3.5" && logField(t, C_RADIO_SESSIONS) == "4294967295");
+  }
+  // music: what Spotify said, and nothing when no account is linked
+  {
+    Reading t = r;
+    const std::vector<std::pair<SpotifyStatus, const char *>> cases = {{SPOTIFY_PLAYING, "playing"}, {SPOTIFY_PAUSED, "paused"}, {SPOTIFY_IDLE, "none"},
+                                                                       {SPOTIFY_DISABLED, ""},      {SPOTIFY_NEEDS_LINK, ""},  {SPOTIFY_ERROR, ""}};
+    for (const auto &c : cases) {
+      t.spotify = c.first;
+      CHECK(logField(t, C_MUSIC) == c.second);
+    }
+  }
+  // the battery: the voltage, the level on the curve with a decimal, and the state in the words of the System info page
+  {
+    Reading t = r;
+    CHECK(logField(t, C_BATTERY_V) == "4.092" && logField(t, C_BATTERY_PCT) == "87.0" && logField(t, C_BATTERY_STATE) == "discharging");
+    t.batteryVolts = 3.3004f;
+    CHECK(logField(t, C_BATTERY_V) == "3.300" && logField(t, C_BATTERY_PCT) == "0.4");
+    t.batteryVolts = 4.25f;
+    CHECK(logField(t, C_BATTERY_PCT) == "100.0");
+    struct StateCase {
+      int charge;
+      bool warm, ready;
+      const char *text;
+    };
+    const StateCase states[] = {{CHARGE_CHARGING, false, true, "charging"},   {CHARGE_FULL, false, true, "full"},        {CHARGE_DISCHARGING, false, true, "discharging"},
+                                {CHARGE_UNKNOWN, true, false, "starting up"}, {CHARGE_UNKNOWN, false, false, "learning"}, {CHARGE_UNKNOWN, false, true, "on battery?"},
+                                {CHARGE_CHARGING, true, false, "charging"}};
+    for (const StateCase &c : states) {
+      t.charge = c.charge;
+      t.chargeWarmingUp = c.warm;
+      t.chargeReady = c.ready;
+      if (logField(t, C_BATTERY_STATE) != c.text) printf("  battery state %d/%d/%d gives '%s'\n", c.charge, c.warm, c.ready, logField(t, C_BATTERY_STATE).c_str());
+      CHECK(logField(t, C_BATTERY_STATE) == c.text);
+    }
+    for (const char *word : {"`on battery?`", "`discharging`", "`charging`", "`full`"}) CHECK(readme.find(word) != std::string::npos);  // the README names them
+    t = r;
+    t.batteryPresent = false;  // no battery: nothing is measured or estimated
+    CHECK(logField(t, C_BATTERY_STATE) == "none");
+    for (Column c : {C_BATTERY_V, C_BATTERY_PCT, C_LEFT, C_PCT_PER_HOUR, C_OVER_MIN, C_CLOCK_MA}) CHECK(logField(t, c).empty());
+  }
+  // the runtime estimate: the three figures of the Left line and the one of the Current line, when there are any
+  {
+    Reading t = r;
+    CHECK(logField(t, C_LEFT) == "3 d 0 h" && logField(t, C_PCT_PER_HOUR) == "1.20" && logField(t, C_OVER_MIN) == "300" && logField(t, C_CLOCK_MA) == "30.0");
+    for (int state : {(int)battest::Estimate::OFF, (int)battest::Estimate::LEARNING}) {  // no figure yet
+      t = r;
+      t.estimate.state = (battest::Estimate::State)state;
+      for (Column c : {C_LEFT, C_PCT_PER_HOUR, C_OVER_MIN, C_CLOCK_MA}) CHECK(logField(t, c).empty());
+    }
+    for (int charge : {CHARGE_CHARGING, CHARGE_FULL}) {  // a charger shows: nothing is being drained
+      t = r;
+      t.charge = charge;
+      for (Column c : {C_LEFT, C_PCT_PER_HOUR, C_OVER_MIN, C_CLOCK_MA}) CHECK(logField(t, c).empty());
+    }
+    t = r;
+    t.charge = CHARGE_UNKNOWN;  // "on battery?": the estimate runs whenever no charger shows
+    CHECK(logField(t, C_LEFT) == "3 d 0 h" && logField(t, C_PCT_PER_HOUR) == "1.20");
+    // the rate with two decimals under ten, as the page shows it, and one from there
+    struct RateCase {
+      float rate;
+      const char *text;
+    };
+    for (const RateCase &c : {RateCase{0.31f, "0.31"}, RateCase{0.114f, "0.11"}, RateCase{9.99f, "9.99"}, RateCase{9.996f, "10.0"}, RateCase{12.34f, "12.3"},
+                              RateCase{0.02f, "0.02"}}) {
+      t = r;
+      t.estimate.pctPerHour = c.rate;
+      if (logField(t, C_PCT_PER_HOUR) != c.text) printf("  rate %g gives '%s'\n", (double)c.rate, logField(t, C_PCT_PER_HOUR).c_str());
+      CHECK(logField(t, C_PCT_PER_HOUR) == c.text);
+    }
+    t = r;  // a fall too slow to measure: the rate as it is, and "more than a month"
+    t.estimate.pctPerHour = 0.004f;
+    t.estimate.hoursLeft = 0;
+    t.estimate.unbounded = true;
+    CHECK(logField(t, C_LEFT) == ">30 d" && logField(t, C_PCT_PER_HOUR) == "0.00" && logField(t, C_OVER_MIN) == "300");
+    t = r;  // a rate that can be measured, and more than a month left at it
+    t.estimate.pctPerHour = 0.11f;
+    t.estimate.hoursLeft = 800.0f;
+    t.estimate.windowMin = 480;
+    CHECK(logField(t, C_LEFT) == ">30 d" && logField(t, C_PCT_PER_HOUR) == "0.11" && logField(t, C_OVER_MIN) == "480");
+    t = r;
+    t.estimate.hoursLeft = 5.6667f;
+    CHECK(logField(t, C_LEFT) == "5 h 40 min");
+    // the current: a decimal under a hundred, and only with the capacity that it is worked out from
+    t = r;
+    t.estimate.avgMa = 99.94f;
+    CHECK(logField(t, C_CLOCK_MA) == "99.9");
+    t.estimate.avgMa = 99.96f;
+    CHECK(logField(t, C_CLOCK_MA) == "100");
+    t.estimate.avgMa = 8.26f;
+    CHECK(logField(t, C_CLOCK_MA) == "8.3");
+    Settings noCapacity = s;
+    noCapacity.batteryCapacityMah = 0;
+    t.settings = &noCapacity;
+    CHECK(logField(t, C_CLOCK_MA).empty() && logField(t, C_BATTERY_CAPACITY_MAH).empty() && logField(t, C_PCT_PER_HOUR) == "1.20");
+    CHECK(logField(r, C_BATTERY_CAPACITY_MAH) == "2500");
+  }
+  // memory and frames
+  {
+    Reading t = r;
+    t.freeHeapBytes = 1023;
+    t.framesSent = 4294967295u;
+    t.framesLate = 4294967295u;
+    t.framesWorstMs = -2147483647 - 1;
+    CHECK(logField(t, C_FREE_KB) == "0" && logField(t, C_FRAMES_SENT) == "4294967295" && logField(t, C_FRAMES_LATE) == "4294967295" &&
+          logField(t, C_FRAMES_WORST_MS) == "-2147483648");
+    CHECK(logField(r, C_FREE_KB) == "187" && logField(r, C_FRAMES_WORST_MS) == "61");
+  }
+  // the firmware: the version, and the build id when there is one
+  {
+    Reading t = r;
+    t.buildId = "";
+    CHECK(logField(t, C_FIRMWARE) == "1.7" && logField(r, C_FIRMWARE) == "1.7 3f9a12c");
+  }
+
+  // a note, and what CSV asks of a field with a comma or a quote in it
+  {
+    Reading t = r;
+    t.note = "start (power on)";
+    CHECK(logField(t, C_NOTES) == "start (power on)" && logLine(t).find(",start (power on)\r\n") != std::string::npos);
+    t.note = "wet, cold, \"quoted\"";
+    const std::string l = logLine(t);
+    CHECK(l.find(",\"wet, cold, \"\"quoted\"\"\"\r\n") != std::string::npos);
+    CHECK(logFields(l).size() == (size_t)kColumnCount && logField(t, C_NOTES) == "wet, cold, \"quoted\"");
+    CHECK(powerLogProblems(std::string(head) + l, readme, false) == 0);
+    // (it can fail: the same note without the quotes is two fields too many for the sheet's checks)
+    std::string bare = l;
+    bare.replace(bare.find(",\"wet"), std::string::npos, ",wet, cold, quoted\r\n");
+    CHECK(powerLogProblems(std::string(head) + bare, readme, false) == 1);
+
+    char out[32];
+    CHECK(csvField("plain text", out, sizeof out) == 10 && !strcmp(out, "plain text"));
+    CHECK(csvField("a,b", out, sizeof out) == 5 && !strcmp(out, "\"a,b\""));
+    CHECK(csvField("say \"hi\"", out, sizeof out) == 12 && !strcmp(out, "\"say \"\"hi\"\"\""));
+    CHECK(csvField("two\nlines", out, sizeof out) == 11 && !strcmp(out, "\"two\nlines\""));
+    CHECK(csvField("cr\rhere", out, sizeof out) == 9 && out[0] == '"');
+    CHECK(csvField("", out, sizeof out) == 0 && out[0] == 0);
+    CHECK(csvField("a,b", out, 5) == 0 && csvField("a,b", out, 6) == 5 && csvField("abc", out, 3) == 0 && csvField("abc", out, 4) == 3 && csvField("abc", out, 0) == 0);
+  }
+
+  // no reading makes a line too long for the buffers the clock uses, and every one has the sheet's number of fields
+  {
+    Settings big = s;
+    big.batteryCapacityMah = 20000;
+    Reading t = sampleReading(big);
+    t.version = "12.34";
+    t.note = "start (reset over USB) and a note that is longer than any";
+    t.uptimeSec = 4294967295u;
+    t.cpuMhz = 240;
+    t.clockReason = "a reason that is far too long to be one";
+    t.radioOnPermille = 1000;
+    t.radioSessions = 4294967295u;
+    t.batteryVolts = 4.2f;
+    t.estimate.pctPerHour = 99.9f;
+    t.estimate.hoursLeft = 47.99f;
+    t.estimate.windowMin = 480;
+    t.estimate.avgMa = 19980.0f;
+    t.freeHeapBytes = 4294967295u;
+    t.framesSent = t.framesLate = 4294967295u;
+    t.framesWorstMs = -2147483647 - 1;
+    const std::string l = logLine(t);
+    printf("  a line is %zu bytes for the README's example and %zu at the most (the buffers hold %zu)\n", line.size(), l.size(), kMaxLine);
+    CHECK(!l.empty() && l.size() < kMaxLine / 2 && logFields(l).size() == (size_t)kColumnCount);
+    CHECK(powerLogProblems(std::string(head) + l, readme, true) == 0);
+    CHECK(logField(t, C_CLOCK_SHOWN) == "240 a reason that is far" && logField(t, C_NOTES).size() == 31);  // long texts are cut, the line stays whole
+  }
+}
+
+// Files by name, each a string.  (Not a std::map: <map> brings in std::apply, which the calls of this file's own
+// apply() with a std::string would then find as well.)
+struct FakeFiles {
+  std::vector<std::pair<std::string, std::string>> all;
+
+  const std::string *find(const std::string &name) const {
+    for (const auto &f : all)
+      if (f.first == name) return &f.second;
+    return nullptr;
+  }
+  size_t count(const std::string &name) const { return find(name) ? 1 : 0; }
+  size_t size() const { return all.size(); }
+  bool empty() const { return all.empty(); }
+  const std::string &at(const std::string &name) const {
+    static const std::string none;
+    const std::string *f = find(name);
+    return f ? *f : none;
+  }
+  std::string &operator[](const std::string &name) {  // (makes the file if there is none, as a map would)
+    for (auto &f : all)
+      if (f.first == name) return f.second;
+    all.emplace_back(name, std::string());
+    return all.back().second;
+  }
+  void erase(const std::string &name) {
+    for (size_t i = 0; i < all.size(); i++) {
+      if (all[i].first != name) continue;
+      all.erase(all.begin() + (long)i);
+      return;
+    }
+  }
+  bool operator==(const FakeFiles &other) const {  // the same files with the same contents, in any order
+    if (all.size() != other.all.size()) return false;
+    for (const auto &f : all) {
+      const std::string *o = other.find(f.first);
+      if (!o || *o != f.second) return false;
+    }
+    return true;
+  }
+};
+
+// A file system made of strings, for the steps of power_log.h that deal with the files; it can be told to fail.
+struct FakeFs {
+  FakeFiles files;
+  bool failRead = false, failAppend = false, failRemove = false, failRename = false;
+  int failReadFrom = -1;   // reads fail from this one on, counted from 0 (-1: none)
+  uint32_t appendCut = 0;  // with failAppend: this many bytes get into the file before the write fails
+  int reads = 0, appends = 0, removes = 0, renames = 0;
+
+  long size(const char *name) {
+    const std::string *f = files.find(name);
+    return f ? (long)f->size() : -1;
+  }
+  long read(const char *name, uint32_t offset, char *buf, uint32_t n) {
+    const int index = reads++;
+    const std::string *f = files.find(name);
+    if (failRead || (failReadFrom >= 0 && index >= failReadFrom) || !f) return -1;
+    if (offset >= f->size()) return 0;
+    const size_t take = f->size() - offset < n ? f->size() - offset : n;
+    memcpy(buf, f->data() + offset, take);
+    return (long)take;
+  }
+  bool append(const char *name, const char *data, uint32_t n) {
+    appends++;
+    if (failAppend) {
+      if (appendCut > 0) files[name].append(data, appendCut < n ? appendCut : n);
+      return false;
+    }
+    files[name].append(data, n);
+    return true;
+  }
+  bool remove(const char *name) {
+    removes++;
+    if (failRemove) return false;
+    files.erase(name);
+    return true;
+  }
+  bool rename(const char *from, const char *to) {
+    renames++;
+    if (failRename || !files.count(from) || files.count(to)) return false;  // like FAT: not onto a name that exists
+    const std::string content = files.at(from);  // (a copy first: making the new name can move the old one in memory)
+    files.erase(from);
+    files[to] = content;
+    return true;
+  }
+};
+
+struct StringSink {
+  std::string text;
+  long failAfter = -1;  // refuses what would take it past this many bytes
+  int writes = 0;
+  bool write(const char *data, uint32_t n) {
+    writes++;
+    if (failAfter >= 0 && (long)(text.size() + n) > failAfter) return false;
+    text.append(data, n);
+    return true;
+  }
+};
+
+// Line `i` of a made-up log: its number, then a filling whose length and letter follow from the number, so a
+// line that is cut short, joined to its neighbour or out of place is seen.
+std::string numberedLine(int i) {
+  const int fill = 10 + (int)(((uint32_t)i * 2654435761u) >> 24) % 190;  // 10 to 199 characters
+  return "n=" + std::to_string(i) + "," + std::string((size_t)fill, (char)('a' + i % 26)) + "\r\n";
+}
+
+struct LogCheck {
+  int problems = 0;  // lines that are not whole, not in order or not under a heading
+  int headings = 0;  // how often `header` stands in it
+  int first = 0, last = 0, lines = 0;
+};
+
+// Reads an exported log of numbered lines back: the heading first, then the lines, whole and in order.
+LogCheck checkLog(const std::string &text, const std::string &header) {
+  LogCheck c;
+  size_t pos = 0;
+  int lineNo = 0;
+  while (pos < text.size()) {
+    const size_t end = text.find("\r\n", pos);
+    if (end == std::string::npos) {  // the last line has no end
+      c.problems++;
+      break;
+    }
+    const std::string line = text.substr(pos, end + 2 - pos);
+    pos = end + 2;
+    lineNo++;
+    if (line == header) {
+      c.headings++;
+      continue;
+    }
+    if (lineNo == 1) c.problems++;  // lines before any heading
+    int n = 0;
+    if (sscanf(line.c_str(), "n=%d,", &n) != 1 || line != numberedLine(n)) {
+      c.problems++;
+      continue;
+    }
+    if (c.lines > 0 && n != c.last + 1) c.problems++;
+    if (c.lines == 0) c.first = n;
+    c.last = n;
+    c.lines++;
+  }
+  if (c.headings == 0) c.problems++;
+  return c;
+}
+
+template <class Fs>
+std::string exported(Fs &fs, const std::string &header, uint32_t cap = 4096, bool *ok = nullptr, uint32_t *bytes = nullptr) {
+  StringSink sink;
+  std::vector<char> buf(cap ? cap : 1);
+  const powerlog::Exported e = powerlog::exportLog(fs, header.c_str(), sink, buf.data(), cap);
+  if (ok) *ok = e.ok;
+  if (bytes) *bytes = e.bytes;
+  return sink.text;
+}
+
+void testPowerLogFiles() {
+  section("power log: the files (append, the cap, reading it back)");
+  using namespace powerlog;
+  char head[kMaxLine];
+  CHECK(formatHeader(head, sizeof head) > 0);
+  const std::string H = head;
+
+  // the reader of made-up logs can tell a good one from a bad one
+  {
+    const std::string good = H + numberedLine(5) + numberedLine(6) + numberedLine(7);
+    const LogCheck g = checkLog(good, H);
+    CHECK(g.problems == 0 && g.headings == 1 && g.first == 5 && g.last == 7 && g.lines == 3);
+    CHECK(checkLog(H + numberedLine(5) + numberedLine(7), H).problems == 1);                                // a line missing
+    CHECK(checkLog(H + numberedLine(6) + numberedLine(5), H).problems == 1);                                // out of order
+    CHECK(checkLog(H + numberedLine(5).substr(0, 9) + "\r\n" + numberedLine(6), H).problems >= 1);          // a line cut short
+    CHECK(checkLog(H + numberedLine(5).substr(0, 9) + numberedLine(6), H).problems >= 1);                   // ... and joined to the next
+    CHECK(checkLog(numberedLine(5) + numberedLine(6), H).problems >= 1);                                    // no heading
+    CHECK(checkLog(good.substr(0, good.size() - 2), H).problems == 1);                                      // the last line end missing
+    CHECK(checkLog(H + numberedLine(5) + H + numberedLine(6), H).headings == 2);                            // the heading twice
+    for (int i = 0; i < 300; i++) CHECK(numberedLine(i).size() >= 16 && numberedLine(i).size() <= 208);     // (what the sizes below count on)
+  }
+
+  // a new log: the heading, then the line; the next line is just the line
+  {
+    FakeFs fs;
+    CHECK(logBytes(fs) == 0);
+    const Appended a = appendLine(fs, head, numberedLine(1).c_str());
+    CHECK(a.what == Append::OK && fs.files.size() == 1 && fs.files[kFile] == H + numberedLine(1));
+    CHECK(a.logBytes == H.size() + numberedLine(1).size() && logBytes(fs) == a.logBytes);
+    const Appended b = appendLine(fs, head, numberedLine(2).c_str());
+    CHECK(b.what == Append::OK && fs.files[kFile] == H + numberedLine(1) + numberedLine(2) && b.logBytes == fs.files[kFile].size());
+    CHECK(fs.removes == 0 && fs.renames == 0 && fs.appends == 2);
+    CHECK(exported(fs, H) == H + numberedLine(1) + numberedLine(2));
+    // an empty file that was left behind (made, and then the write failed) begins like a new one
+    FakeFs empty;
+    empty.files[kFile] = "";
+    CHECK(appendLine(empty, head, numberedLine(1).c_str()).what == Append::OK && empty.files[kFile] == H + numberedLine(1));
+    // nothing is written for a line or a heading that is empty or too long
+    FakeFs none;
+    const std::string tooLong(kMaxLine, 'x');
+    CHECK(appendLine(none, head, "").what == Append::FAILED && appendLine(none, "", "x\r\n").what == Append::FAILED);
+    CHECK(appendLine(none, head, tooLong.c_str()).what == Append::FAILED && appendLine(none, tooLong.c_str(), "x\r\n").what == Append::FAILED);
+    CHECK(none.files.empty() && none.appends == 0);
+  }
+
+  // the cap: the two files together never hold more, the newest lines are always there, whole and in order
+  // under one heading, and nothing is dropped before the log is full
+  for (uint32_t cap : {6000u, 20000u, 64u * 1024u}) {
+    FakeFs fs;
+    int rotations = 0, firstRotationAt = 0, bad = 0;
+    uint32_t smallestFull = 0xFFFFFFFFu;  // the least the log held from its first rotation on
+    const int kLines = 2500;
+    for (int i = 1; i <= kLines; i++) {
+      const std::string oldBefore = fs.files.count(kOldFile) ? fs.files[kOldFile] : std::string();
+      const Appended a = appendLine(fs, head, numberedLine(i).c_str(), cap);
+      if (a.what == Append::FAILED) bad++;
+      if (a.what == Append::ROTATED) {
+        rotations++;
+        if (!firstRotationAt) firstRotationAt = i;
+      }
+      if ((a.what == Append::ROTATED) != (fs.files.count(kOldFile) && fs.files[kOldFile] != oldBefore)) bad++;  // it says so when lines were dropped
+      const long cur = fs.size(kFile), old = fs.size(kOldFile);
+      if (cur <= 0 || (uint32_t)cur > cap / 2 || old > (long)(cap / 2)) bad++;
+      if (logBytes(fs) > cap || a.logBytes != logBytes(fs)) bad++;
+      if (i % 7 == 0 || a.what == Append::ROTATED || i == kLines) {  // (reading it back every time would take long)
+        bool ok = false;
+        uint32_t bytes = 0;
+        const std::string text = exported(fs, H, 4096, &ok, &bytes);
+        const LogCheck c = checkLog(text, H);
+        if (!ok || bytes != text.size() || c.problems != 0 || c.headings != 1 || c.last != i) bad++;
+        if (rotations <= 1 && c.first != 1) bad++;  // nothing is dropped until the old file is replaced for the first time
+        if (rotations >= 1 && bytes < smallestFull) smallestFull = bytes;
+        if (text.size() > cap) bad++;
+      }
+    }
+    printf("  cap %u: %d lines written, the old half dropped %d times (first at line %d); the log never held less than %u bytes after that\n", (unsigned)cap,
+           kLines, rotations, firstRotationAt, (unsigned)smallestFull);
+    CHECK(bad == 0);
+    CHECK(rotations >= 2 && firstRotationAt > 1);
+    CHECK(smallestFull + 208 >= cap / 2 && smallestFull <= cap);  // what is kept is at least half the cap, less a line
+    // (it can fail: with no cap to speak of the same lines pile up past it)
+    FakeFs loose;
+    for (int i = 1; i <= 200; i++) appendLine(loose, head, numberedLine(i).c_str(), 0xFFFFFFFFu);
+    CHECK(logBytes(loose) > 6000 && loose.files.count(kOldFile) == 0);
+  }
+  CHECK(kMaxBytes == 1024 * 1024 && kMaxBytes / 2 > 100 * kMaxLine);  // the real cap: a megabyte
+
+  // a file that another firmware began, under other columns: its lines keep their heading, in the old file,
+  // and the new lines get theirs
+  {
+    FakeFs fs;
+    const std::string otherHead = "test,firmware,a_column_that_is_gone\r\n", otherLines = "x,1.6 abc,1\r\ny,1.6 abc,2\r\n";
+    fs.files[kFile] = otherHead + otherLines;
+    fs.files[kOldFile] = "older still\r\n";
+    const Appended a = appendLine(fs, head, numberedLine(1).c_str());
+    CHECK(a.what == Append::ROTATED && fs.files[kOldFile] == otherHead + otherLines && fs.files[kFile] == H + numberedLine(1));
+    CHECK(appendLine(fs, head, numberedLine(2).c_str()).what == Append::OK);
+    CHECK(exported(fs, H) == otherHead + otherLines + H + numberedLine(1) + numberedLine(2));  // each lot under its own heading
+    // a heading that only begins like this firmware's is another heading, shorter or longer
+    for (const std::string &other : {H.substr(0, H.size() - 2) + ",one_more\r\n", H.substr(0, H.size() - 8) + "\r\n", std::string("t\r\n")}) {
+      FakeFs g;
+      g.files[kFile] = other + "1\r\n";
+      CHECK(appendLine(g, head, numberedLine(1).c_str()).what == Append::ROTATED && g.files[kOldFile] == other + "1\r\n" && g.files[kFile] == H + numberedLine(1));
+    }
+    // the same heading is no reason to start a new file (the control of the case above)
+    FakeFs same;
+    same.files[kFile] = H + numberedLine(1);
+    CHECK(appendLine(same, head, numberedLine(2).c_str()).what == Append::OK && same.files.count(kOldFile) == 0);
+    // a file that holds the heading and nothing else yet
+    FakeFs bare;
+    bare.files[kFile] = H;
+    CHECK(appendLine(bare, head, numberedLine(1).c_str()).what == Append::OK && bare.files[kFile] == H + numberedLine(1));
+  }
+
+  // a write that was cut short left part of a line: the next line starts on a line of its own
+  {
+    FakeFs fs;
+    fs.files[kFile] = H + numberedLine(1) + "n=2,bbb";
+    CHECK(appendLine(fs, head, numberedLine(3).c_str()).what == Append::OK);
+    CHECK(fs.files[kFile] == H + numberedLine(1) + "n=2,bbb\r\n" + numberedLine(3));
+    const LogCheck c = checkLog(exported(fs, H), H);
+    CHECK(c.problems == 2 && c.last == 3 && c.lines == 2);  // the half line is lost (and so is its number), its neighbours are whole
+    // (the control: without that line end the two would be one line, and line 3 lost with it)
+    CHECK(checkLog(H + numberedLine(1) + "n=2,bbb" + numberedLine(3), H).lines == 1);
+  }
+
+  // things that fail: nothing is half done, and the next line goes in as if nothing had happened
+  {
+    FakeFs fs;
+    for (int i = 1; i <= 3; i++) appendLine(fs, head, numberedLine(i).c_str());
+    const FakeFiles before = fs.files;
+    fs.failRead = true;  // the file cannot be read: nothing is touched
+    CHECK(appendLine(fs, head, numberedLine(4).c_str()).what == Append::FAILED && fs.files == before && fs.appends == 3);
+    fs.failRead = false;
+    fs.reads = 0;
+    fs.failReadFrom = 1;  // ... or its heading can and its last byte cannot: the same
+    CHECK(appendLine(fs, head, numberedLine(4).c_str()).what == Append::FAILED && fs.files == before && fs.appends == 3 && fs.reads == 2);
+    fs.failReadFrom = -1;
+    fs.failAppend = true;  // it cannot be written
+    CHECK(appendLine(fs, head, numberedLine(4).c_str()).what == Append::FAILED && fs.files == before);
+    fs.appendCut = 9;  // ... or only the start of the line got in
+    CHECK(appendLine(fs, head, numberedLine(4).c_str()).what == Append::FAILED && fs.files[kFile].size() == before.at(kFile).size() + 9);
+    fs.failAppend = false;
+    CHECK(appendLine(fs, head, numberedLine(5).c_str()).what == Append::OK);
+    const LogCheck c = checkLog(exported(fs, H), H);
+    CHECK(c.first == 1 && c.last == 5 && c.lines == 4 && c.problems == 2);  // lines 1 to 3 and 5 are whole; the half of line 4 is all that is wrong
+
+    // when the log is full and the old file cannot be deleted or the new one renamed: no line, and nothing lost
+    // that was not going to be dropped anyway
+    FakeFs stuck;
+    int n = 0;
+    // (both loops end by a count as well: a cap that does not work must fail this test, not keep it running)
+    while (n < 1000 && stuck.files.count(kOldFile) == 0) appendLine(stuck, head, numberedLine(++n).c_str(), 6000);
+    while (n < 1000 && stuck.files[kFile].size() + numberedLine(n + 1).size() <= 3000) appendLine(stuck, head, numberedLine(++n).c_str(), 6000);
+    CHECK(n < 1000 && stuck.files.count(kOldFile) == 1);
+    const FakeFiles atFull = stuck.files;  // (the next line is the one that makes room first)
+    stuck.failRemove = true;
+    CHECK(appendLine(stuck, head, numberedLine(n + 1).c_str(), 6000).what == Append::FAILED && stuck.files == atFull);
+    stuck.failRemove = false;
+    stuck.failRename = true;
+    CHECK(appendLine(stuck, head, numberedLine(n + 1).c_str(), 6000).what == Append::FAILED);
+    CHECK(stuck.files.count(kOldFile) == 0 && stuck.files[kFile] == atFull.at(kFile));  // the newest lines are all there
+    stuck.failRename = false;
+    CHECK(appendLine(stuck, head, numberedLine(n + 1).c_str(), 6000).what == Append::ROTATED);
+    const LogCheck after = checkLog(exported(stuck, H), H);
+    CHECK(after.problems == 0 && after.last == n + 1 && after.headings == 1);
+  }
+
+  // reading the log back: one heading at the top, whatever the size of the pieces it is read in
+  {
+    FakeFs fs;
+    for (int i = 1; i <= 120; i++) appendLine(fs, head, numberedLine(i).c_str(), 12000);
+    CHECK(fs.files.count(kOldFile) == 1);
+    bool ok = false;
+    uint32_t bytes = 0;
+    const std::string whole = exported(fs, H, 4096, &ok, &bytes);
+    CHECK(ok && bytes == whole.size() && checkLog(whole, H).problems == 0 && checkLog(whole, H).headings == 1);
+    CHECK(whole == fs.files[kOldFile] + fs.files[kFile].substr(H.size()));  // the old file, then the new one without its heading
+    for (uint32_t cap : {(uint32_t)kMaxLine, (uint32_t)kMaxLine + 1, 1000u, 100000u}) {
+      bool okCap = false;
+      CHECK(exported(fs, H, cap, &okCap) == whole && okCap);
+    }
+    for (uint32_t cap : {0u, 1u, (uint32_t)kMaxLine - 1}) {  // a piece that could not hold a heading: nothing is read
+      bool okCap = true;
+      CHECK(exported(fs, H, cap, &okCap).empty() && !okCap);
+    }
+    // the sink gives up (a card that is full, a serial port nobody reads): it stops there and says so
+    for (long limit : {0L, 100L, (long)H.size(), (long)whole.size() - 1}) {
+      StringSink sink;
+      sink.failAfter = limit;
+      std::vector<char> buf(4096);
+      const Exported e = exportLog(fs, head, sink, buf.data(), 4096);
+      CHECK(!e.ok && e.bytes == sink.text.size() && (long)sink.text.size() <= limit && whole.compare(0, sink.text.size(), sink.text) == 0);
+    }
+    {
+      StringSink sink;
+      sink.failAfter = (long)whole.size();  // (the control: room for exactly all of it)
+      std::vector<char> buf(4096);
+      CHECK(exportLog(fs, head, sink, buf.data(), 4096).ok && sink.text == whole);
+    }
+    fs.failRead = true;  // the log cannot be read
+    bool okRead = true;
+    exported(fs, H, 4096, &okRead);
+    CHECK(!okRead);
+    fs.failRead = false;
+    // ... or only so far.  Wherever the reading stops, what went out is the start of the log and it is not
+    // passed off as the whole of it (a copy on the card that is short and says nothing would be the worst kind).
+    fs.reads = 0;
+    CHECK(exported(fs, H, 1000, &okRead) == whole && okRead);
+    const int readsOfAll = fs.reads;
+    CHECK(readsOfAll >= 8);  // (both files' first lines, and several pieces of each)
+    for (int from = 0; from <= readsOfAll; from++) {
+      fs.reads = 0;
+      fs.failReadFrom = from;
+      bool okPart = true;
+      const std::string part = exported(fs, H, 1000, &okPart);
+      if (from < readsOfAll) {
+        if (okPart || part.size() >= whole.size() || whole.compare(0, part.size(), part) != 0) printf("  reads failing from number %d: not noticed\n", from);
+        CHECK(!okPart && part.size() < whole.size() && whole.compare(0, part.size(), part) == 0);
+      } else {
+        CHECK(okPart && part == whole);  // (the control: every read it needs works)
+      }
+    }
+    fs.failReadFrom = -1;
+
+    // an empty log is the heading alone
+    FakeFs none;
+    CHECK(exported(none, H, 4096, &ok, &bytes) == H && ok && bytes == H.size());
+    none.files[kFile] = "";
+    none.files[kOldFile] = "";
+    CHECK(exported(none, H) == H);
+    // only the old file is there (the new one could not be begun after the old half was put aside)
+    FakeFs oldOnly;
+    oldOnly.files[kOldFile] = H + numberedLine(1) + numberedLine(2);
+    CHECK(exported(oldOnly, H) == H + numberedLine(1) + numberedLine(2));
+    CHECK(appendLine(oldOnly, head, numberedLine(3).c_str()).what == Append::OK && checkLog(exported(oldOnly, H), H).problems == 0 &&
+          checkLog(exported(oldOnly, H), H).lines == 3);
+    // the old file ends in the middle of a line: the new file's lines start on a line of their own
+    FakeFs torn;
+    torn.files[kOldFile] = H + numberedLine(1) + "n=2,bb";
+    torn.files[kFile] = H + numberedLine(3);
+    CHECK(exported(torn, H) == H + numberedLine(1) + "n=2,bb\r\n" + numberedLine(3));
+    // a file that does not begin with a line at all is put out as it is, and the next file's heading with it
+    FakeFs junk;
+    junk.files[kOldFile] = std::string(2 * kMaxLine, '#');
+    junk.files[kFile] = H + numberedLine(1);
+    CHECK(exported(junk, H) == std::string(2 * kMaxLine, '#') + "\r\n" + H + numberedLine(1));
+  }
+
+  // forgetting the log
+  {
+    FakeFs fs;
+    for (int i = 1; i <= 120; i++) appendLine(fs, head, numberedLine(i).c_str(), 12000);
+    CHECK(fs.files.size() == 2 && clearLog(fs) && fs.files.empty() && logBytes(fs) == 0);
+    CHECK(clearLog(fs));  // nothing to forget is fine too
+    CHECK(appendLine(fs, head, numberedLine(1).c_str()).what == Append::OK && exported(fs, H) == H + numberedLine(1));
+    fs.failRemove = true;
+    CHECK(!clearLog(fs) && fs.files.size() == 1);
+  }
+}
+
+// A file of a folder as a string ("" if there is none), without the complaint readFile() makes.
+std::string folderFile(const char *folder, const char *name) {
+  const std::string path = std::string(folder) + "/" + name;
+  FILE *f = fopen(path.c_str(), "rb");
+  if (!f) return "";
+  std::string text;
+  char buf[4096];
+  size_t n;
+  while ((n = fread(buf, 1, sizeof buf, f)) > 0) text.append(buf, n);
+  fclose(f);
+  return text;
+}
+
+// The same steps on the files of a real folder, through the very calls the clock makes on its flash partition
+// (FolderFs).  The made-up file system above is the reference: asked the same things, the two end up with the
+// same files.  (A folder of this PC is not the FAT file system of the clock; what is run here is the calls: the
+// flags, the places in the file, what counts as an error.)
+void testPowerLogFolder() {
+  section("power log: the files of a real folder");
+  using namespace powerlog;
+  char head[kMaxLine];
+  CHECK(formatHeader(head, sizeof head) > 0);
+  const std::string H = head;
+  // (in memory where the PC has /dev/shm: every line is followed by an fsync, which takes tens of milliseconds on a disk)
+  char inMemory[] = "/dev/shm/plog_test_XXXXXX", onDisk[] = "/tmp/plog_test_XXXXXX";
+  const char *dir = mkdtemp(inMemory);
+  if (!dir) dir = mkdtemp(onDisk);
+  if (!dir) {
+    printf("  cannot make a folder in /dev/shm or /tmp\n");
+    g_failed++;
+    return;
+  }
+  FolderFs real(dir);
+  FakeFs fake;
+
+  // an empty folder: no file, nothing to read, nothing to rename; deleting what is not there is no error
+  char piece[64];
+  CHECK(real.size(kFile) == -1 && real.size(kOldFile) == -1 && logBytes(real) == 0);
+  CHECK(real.read(kFile, 0, piece, sizeof piece) == -1);
+  CHECK(real.remove(kFile) && real.remove(kOldFile));
+  CHECK(!real.rename(kFile, kOldFile));
+  CHECK(exported(real, H) == H);
+
+  // 400 lines with a small cap, to both
+  int differ = 0;
+  for (int i = 1; i <= 400; i++) {
+    const std::string l = numberedLine(i);
+    const Appended a = appendLine(real, head, l.c_str(), 20000), f = appendLine(fake, head, l.c_str(), 20000);
+    if (a.what != f.what || a.what == Append::FAILED || a.logBytes != f.logBytes || real.size(kFile) != fake.size(kFile) ||
+        real.size(kOldFile) != fake.size(kOldFile)) {
+      if (differ++ < 3) printf("  line %d: the folder and the made-up files differ (%d/%d, %u/%u bytes)\n", i, (int)a.what, (int)f.what, (unsigned)a.logBytes, (unsigned)f.logBytes);
+    }
+  }
+  CHECK(differ == 0);
+  CHECK(fake.files.count(kOldFile) == 1 && fake.renames >= 2);  // (the old half was dropped more than once on the way)
+  CHECK(folderFile(dir, kFile) == fake.files.at(kFile) && folderFile(dir, kOldFile) == fake.files.at(kOldFile));  // byte for byte
+  for (uint32_t cap : {(uint32_t)kMaxLine, 4096u}) {
+    bool okReal = false, okFake = false;
+    uint32_t bytes = 0;
+    const std::string text = exported(real, H, cap, &okReal, &bytes);
+    CHECK(okReal && bytes == text.size() && text == exported(fake, H, cap, &okFake) && okFake);
+    const LogCheck c = checkLog(text, H);
+    CHECK(c.problems == 0 && c.headings == 1 && c.last == 400);
+  }
+
+  // reading: a piece from the middle, the last bytes (fewer than asked for), and past the end (nothing, which is no error)
+  const std::string cur = fake.files.at(kFile);
+  CHECK(cur.size() > 100);
+  CHECK(real.read(kFile, 10, piece, 20) == 20 && memcmp(piece, cur.data() + 10, 20) == 0);
+  CHECK(real.read(kFile, (uint32_t)cur.size() - 5, piece, 20) == 5 && memcmp(piece, cur.data() + cur.size() - 5, 5) == 0);
+  CHECK(real.read(kFile, (uint32_t)cur.size(), piece, 20) == 0 && real.read(kFile, (uint32_t)cur.size() + 1000, piece, 20) == 0);
+  CHECK(real.read(kFile, 0, piece, 0) == 0);
+
+  // a file that ends in the middle of a line (cut short here by hand) is mended the same way
+  {
+    const std::string path = std::string(dir) + "/" + kFile;
+    CHECK(truncate(path.c_str(), (off_t)cur.size() - 7) == 0);
+    fake.files[kFile].resize(cur.size() - 7);
+    CHECK(appendLine(real, head, numberedLine(401).c_str(), 20000).what == appendLine(fake, head, numberedLine(401).c_str(), 20000).what);
+    const std::string mended = folderFile(dir, kFile), tail = "\r\n" + numberedLine(401);
+    CHECK(mended == fake.files.at(kFile));
+    CHECK(mended.size() > tail.size() && mended.compare(mended.size() - tail.size(), tail.size(), tail) == 0);
+  }
+
+  // another firmware's file: put aside under its own heading
+  {
+    CHECK(clearLog(real) && real.size(kFile) == -1 && real.size(kOldFile) == -1 && folderFile(dir, kFile).empty());
+    const std::string other = "some,other,columns\r\n1,2,3\r\n";
+    CHECK(real.append(kFile, other.data(), (uint32_t)other.size()) && folderFile(dir, kFile) == other);
+    CHECK(appendLine(real, head, numberedLine(1).c_str()).what == Append::ROTATED);
+    CHECK(folderFile(dir, kOldFile) == other && folderFile(dir, kFile) == H + numberedLine(1));
+    CHECK(exported(real, H) == other + H + numberedLine(1));
+  }
+
+  // a name that is taken by something that is no file (here a folder): it has no size, and cannot be read, added to
+  // or deleted; the log says so instead of pretending
+  {
+    CHECK(clearLog(real));
+    const std::string blocker = std::string(dir) + "/" + kOldFile;
+    CHECK(mkdir(blocker.c_str(), 0777) == 0);
+    CHECK(real.size(kOldFile) == -1 && !real.remove(kOldFile) && real.read(kOldFile, 0, piece, 8) == -1 && !real.append(kOldFile, "x", 1));
+    CHECK(!clearLog(real));
+    // lines go in until the file is full; then the old half cannot be dropped and every further line is refused
+    int written = 0, refused = 0;
+    for (int i = 1; i <= 60; i++) (appendLine(real, head, numberedLine(written + 1).c_str(), 6000).what == Append::FAILED ? refused : written)++;
+    CHECK(written > 10 && refused > 10 && written + refused == 60);
+    const LogCheck c = checkLog(exported(real, H), H);
+    CHECK(c.problems == 0 && c.first == 1 && c.last == written && real.size(kFile) <= 3000);
+    CHECK(rmdir(blocker.c_str()) == 0);
+    CHECK(appendLine(real, head, numberedLine(written + 1).c_str(), 6000).what == Append::ROTATED);  // the way is clear: it carries on
+    CHECK(checkLog(exported(real, H), H).problems == 0 && checkLog(exported(real, H), H).last == written + 1);
+  }
+
+  // a path too long to be a path is an error, not another file's name; and a folder that is not there takes nothing
+  {
+    const std::string longDir = "/tmp/" + std::string(200, 'x');
+    FolderFs tooLong(longDir.c_str());
+    CHECK(tooLong.size(kFile) == -1 && tooLong.read(kFile, 0, piece, 8) == -1 && !tooLong.append(kFile, "x", 1) && !tooLong.remove(kFile) &&
+          !tooLong.rename(kFile, kOldFile));
+    FolderFs gone("/tmp/plog_test_no_such_folder");
+    CHECK(gone.size(kFile) == -1 && !gone.append(kFile, "x", 1) && gone.read(kFile, 0, piece, 8) == -1);
+    CHECK(appendLine(gone, head, numberedLine(1).c_str()).what == Append::FAILED);
+    bool ok = false;
+    CHECK(exported(gone, H, 4096, &ok) == H && ok);  // (no files is an empty log)
+  }
+
+  CHECK(clearLog(real) && real.size(kFile) == -1 && real.size(kOldFile) == -1);
+  CHECK(rmdir(dir) == 0);  // nothing else was left in it
+}
+
+void testPowerLogSchedule() {
+  section("power log: when a line is due");
+  using namespace powerlog;
+  CHECK(kIntervalSec == 600 && kFirstSec > 0 && kFirstSec < 60 && kLatestStartUs > 0 && kLatestStartUs < 300000);
+  {
+    Schedule s;
+    CHECK(s.startLine() && !s.due(0) && !s.due(kFirstSec - 1) && s.due(kFirstSec) && s.due(100000));
+    s.done(kFirstSec, true);
+    CHECK(!s.startLine() && s.lines() == 1 && s.lastSec() == kFirstSec);
+    CHECK(!s.due(kFirstSec) && !s.due(kFirstSec + kIntervalSec - 1) && s.due(kFirstSec + kIntervalSec));
+  }
+
+  // a day in which the loop gets round to it a little late every time: a line about every ten minutes, and
+  // never two closer together than that
+  {
+    Schedule s;
+    uint32_t rng = 4711, lastWrite = 0, minGap = 0xFFFFFFFFu, maxGap = 0;
+    int lines = 0;
+    for (uint32_t t = 0; t < 86400; t++) {
+      rng = rng * 1664525u + 1013904223u;
+      if (((rng >> 16) % 5) != 0) continue;  // the loop is busy with a frame four seconds in five
+      if (!s.due(t)) continue;
+      if (lines > 0) {
+        const uint32_t gap = t - lastWrite;
+        if (gap < minGap) minGap = gap;
+        if (gap > maxGap) maxGap = gap;
+      }
+      lastWrite = t;
+      lines++;
+      s.done(t, true);
+    }
+    printf("  a simulated day: %d lines, %u to %u s apart\n", lines, (unsigned)minGap, (unsigned)maxGap);
+    CHECK(lines >= 140 && lines <= 144 && (uint32_t)lines == s.lines());
+    CHECK(minGap >= kIntervalSec && maxGap < kIntervalSec + 60);
+  }
+
+  // a write that fails is not tried again before the next line is due, and after three in a row no more at all
+  {
+    Schedule s;
+    s.done(10, true);
+    s.done(610, false);
+    CHECK(s.failures() == 1 && !s.stopped() && s.lines() == 1 && !s.due(611) && !s.due(1209) && s.due(1210));
+    s.done(1210, false);
+    CHECK(s.failures() == 2 && !s.stopped());
+    s.done(1810, true);  // one that works: the count starts again
+    CHECK(s.failures() == 0 && s.lines() == 2);
+    for (int i = 0; i < kMaxFailures - 1; i++) s.done(2410 + (uint32_t)i * 600, false);
+    CHECK(!s.stopped() && s.due(100000));
+    s.done(4000, false);
+    CHECK(s.stopped() && s.failures() == kMaxFailures && !s.due(4000 + kIntervalSec) && !s.due(4000000000u));
+    Schedule first;  // the line of the start fails: the next is a whole interval later, and is no longer "the start"
+    first.done(kFirstSec, false);
+    CHECK(!first.startLine() && !first.due(kFirstSec + kIntervalSec - 1) && first.due(kFirstSec + kIntervalSec) && first.lines() == 0);
+    Schedule off;  // nothing to write to
+    off.stop();
+    CHECK(off.stopped() && !off.due(kFirstSec) && !off.due(1000000));
+  }
+
+  // seconds that run over (136 years on): the interval is a difference, so it still holds
+  {
+    Schedule s;
+    s.done(4294967000u, true);
+    CHECK(!s.due(4294967295u) && !s.due(4294967000u + kIntervalSec - 1) && s.due(4294967000u + kIntervalSec));
+    CHECK((uint32_t)(4294967000u + kIntervalSec) < 1000);  // (that moment is past the wrap)
+  }
+}
+
+void testPowerLogStatus() {
+  section("power log: the rows of the Power and settings page");
+  using namespace powerlog;
+  const size_t kShown = 42;  // an info page shows this much of a value
+  CHECK(kStatusRow == kShown + 1);
+  // A row is whole when it ends the way its text ends: a text cut off at the edge of the page does not.
+  auto whole = [](const char *row) {
+    for (const char *end : {" ago", " KB)", "in a moment", "FAILED", "write error", "read the log", "README)", "will not mount", "lines)"}) {
+      const size_t n = strlen(end), l = strlen(row);
+      if (l >= n && !strcmp(row + l - n, end)) return true;
+    }
+    return false;
+  };
+  int rowsSeen = 0, bad = 0;
+  size_t longest = 0;
+  char longestText[kStatusRow] = "";
+  for (int on = 0; on < 2; on++)
+    for (int problem : {(int)Status::FINE, (int)Status::NO_PARTITION, (int)Status::CANNOT_MOUNT})
+      for (int stopped = 0; stopped < 2; stopped++)
+        for (int failures : {0, 1, kMaxFailures})
+          for (uint32_t lines : {0u, 1u, 2u, 99999u})
+            for (uint32_t bytes : {0u, 1u, 1024u, 1025u, kMaxBytes})
+              for (uint32_t since : {0u, 89u, 90u, 5399u, 5400u, 36000u})
+                for (int copy : {(int)Status::COPY_NONE, (int)Status::COPY_DONE, (int)Status::COPY_CANNOT_READ, (int)Status::COPY_CARD_ERROR}) {
+                  Status s;
+                  s.on = on != 0;
+                  s.problem = (Status::Problem)problem;
+                  s.stopped = stopped != 0;
+                  s.failures = failures;
+                  s.lines = lines;
+                  s.logBytes = bytes;
+                  s.sinceLineSec = since;
+                  s.copy = (Status::Copy)copy;
+                  s.copyBytes = bytes;
+                  char rows[2][kStatusRow] = {"", ""};
+                  const int n = statusRows(s, rows);
+                  if (n != on + (copy != Status::COPY_NONE ? 1 : 0)) bad++;
+                  for (int i = 0; i < n; i++) {
+                    rowsSeen++;
+                    const size_t len = strlen(rows[i]);
+                    if (len == 0 || len > kShown || !whole(rows[i])) {
+                      if (bad++ < 5) printf("  a row that does not fit or is cut: '%s'\n", rows[i]);
+                    }
+                    if (len > longest) {
+                      longest = len;
+                      snprintf(longestText, sizeof longestText, "%s", rows[i]);
+                    }
+                  }
+                  if (!on && n == 1 && strncmp(rows[0], "off, ", 5) != 0) bad++;  // the log is off, and the row about its copy says so
+                  if (on && n == 2 && !strncmp(rows[1], "off", 3)) bad++;
+                }
+  printf("  %d rows, the longest takes %zu of %zu characters: '%s'\n", rowsSeen, longest, kShown, longestText);
+  CHECK(bad == 0 && rowsSeen > 1000 && longest <= kShown);
+
+  // what they say
+  char rows[2][kStatusRow];
+  Status s;
+  CHECK(statusRows(s, rows) == 0);  // off, and no copy: nothing on the page
+  s.on = true;
+  CHECK(statusRows(s, rows) == 1 && !strcmp(rows[0], "on: first line in a moment"));
+  s.lines = 1;
+  s.logBytes = 460;
+  s.sinceLineSec = 45;
+  CHECK(statusRows(s, rows) == 1 && !strcmp(rows[0], "1 KB, 1 line this run, 45 s ago"));
+  s.lines = 37;
+  s.logBytes = 412 * 1024;
+  s.sinceLineSec = 240;
+  CHECK(statusRows(s, rows) == 1 && !strcmp(rows[0], "412 KB, 37 lines this run, 4 min ago"));
+  s.sinceLineSec = 89;  // seconds up to a minute and a half, then minutes to the nearest, then hours
+  CHECK(statusRows(s, rows) == 1 && !strcmp(rows[0], "412 KB, 37 lines this run, 89 s ago"));
+  s.sinceLineSec = 90;
+  CHECK(statusRows(s, rows) == 1 && !strcmp(rows[0], "412 KB, 37 lines this run, 2 min ago"));
+  s.sinceLineSec = 209;
+  CHECK(statusRows(s, rows) == 1 && !strcmp(rows[0], "412 KB, 37 lines this run, 3 min ago"));
+  s.sinceLineSec = 210;
+  CHECK(statusRows(s, rows) == 1 && !strcmp(rows[0], "412 KB, 37 lines this run, 4 min ago"));
+  s.sinceLineSec = 5399;
+  CHECK(statusRows(s, rows) == 1 && !strcmp(rows[0], "412 KB, 37 lines this run, 90 min ago"));
+  s.sinceLineSec = 7200;
+  CHECK(statusRows(s, rows) == 1 && !strcmp(rows[0], "412 KB, 37 lines this run, 2 h ago"));
+  s.failures = 1;
+  CHECK(statusRows(s, rows) == 1 && !strcmp(rows[0], "37 lines this run, last write FAILED"));
+  s.failures = kMaxFailures;
+  s.stopped = true;
+  CHECK(statusRows(s, rows) == 1 && !strcmp(rows[0], "STOPPED after 3 write errors (37 lines)"));
+  s.problem = Status::NO_PARTITION;
+  CHECK(statusRows(s, rows) == 1 && !strcmp(rows[0], "OFF: no ffat partition (see the README)"));
+  s.problem = Status::CANNOT_MOUNT;
+  CHECK(statusRows(s, rows) == 1 && !strcmp(rows[0], "OFF: the flash partition will not mount"));
+  s = Status();
+  s.on = true;
+  s.lines = 2;
+  s.logBytes = 2048;
+  s.copy = Status::COPY_DONE;
+  s.copyBytes = 1500;
+  CHECK(statusRows(s, rows) == 2 && !strcmp(rows[0], "2 KB, 2 lines this run, 0 s ago") && !strcmp(rows[1], "copied to SD card at start (2 KB)"));
+  s.copy = Status::COPY_CARD_ERROR;
+  CHECK(statusRows(s, rows) == 2 && !strcmp(rows[1], "NOT copied to SD: card write error"));
+  s.on = false;
+  s.copy = Status::COPY_CANNOT_READ;
+  CHECK(statusRows(s, rows) == 1 && !strcmp(rows[0], "off, NOT copied to SD: cannot read the log"));
+  s.copy = Status::COPY_DONE;
+  s.copyBytes = kMaxBytes;
+  CHECK(statusRows(s, rows) == 1 && !strcmp(rows[0], "off, copied to SD card at start (1024 KB)"));
+
+  // numbers that no run reaches are kept to the digits there is room for, so the row is whole all the same
+  Status absurd;
+  absurd.on = true;
+  absurd.stopped = true;
+  absurd.failures = 2000000000;
+  absurd.lines = 4000000000u;
+  CHECK(statusRows(absurd, rows) == 1 && !strcmp(rows[0], "STOPPED after 9 write errors (99999 lines)") && strlen(rows[0]) == kShown);
+  absurd.stopped = false;
+  absurd.failures = 0;
+  absurd.logBytes = 4000000000u;
+  absurd.sinceLineSec = 4000000000u;
+  absurd.copy = Status::COPY_DONE;
+  absurd.copyBytes = 4000000000u;
+  CHECK(statusRows(absurd, rows) == 2 && !strcmp(rows[0], "9999 KB, 99999 lines this run, 999 h ago") && !strcmp(rows[1], "copied to SD card at start (9999 KB)"));
+  absurd.failures = -5;  // (no such count: it reads as none)
+  absurd.stopped = true;
+  CHECK(statusRows(absurd, rows) == 2 && !strcmp(rows[0], "STOPPED after 0 write errors (99999 lines)"));
+  // (the check for a row that is cut can fail: the same text with its end off the page)
+  CHECK(whole("412 KB, 37 lines this run, 4 min ago") && !whole("412 KB, 37 lines this run, 4 min a"));
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -2960,6 +4112,11 @@ int main(int argc, char **argv) {
   testRepoExampleFile(false);
   testReadmeLists("../../README.md");
   testPowerLog();
+  testPowerLogLine();
+  testPowerLogFiles();
+  testPowerLogFolder();
+  testPowerLogSchedule();
+  testPowerLogStatus();
   testMoonPhase();
   testMoonGlyph();
   testDateFormats();

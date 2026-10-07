@@ -198,3 +198,26 @@ bool sdRename(const char *from, const char *to) {
   unlink(b);  // FAT will not rename onto a name that exists
   return rename(a, b) == 0;
 }
+
+int sdCreate(const char *name) {
+  if (!s_card) return -1;
+  char path[80];
+  pathFor(name, path, sizeof path);
+  return open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+}
+
+bool sdWrite(int fd, const void *buf, size_t len) { return fd >= 0 && write(fd, buf, len) == (ssize_t)len; }
+
+bool sdCommit(int fd) {
+  if (fd < 0) return false;
+  const bool flushed = fsync(fd) == 0;
+  const bool closed = close(fd) == 0;
+  return flushed && closed;
+}
+
+bool sdRemove(const char *name) {
+  if (!s_card) return false;
+  char path[80];
+  pathFor(name, path, sizeof path);
+  return unlink(path) == 0;
+}

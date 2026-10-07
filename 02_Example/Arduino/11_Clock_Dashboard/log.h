@@ -23,6 +23,11 @@ void consoleBegin();
 // is switched off, so a computer no longer sees the clock.  Call it from the UI task.
 void consoleShutDown();
 
+// While something long is printed that other tasks' lines must not get into the middle of (the power log,
+// which is copied from the console as a file): LOGF lines are dropped, not kept for later.  consoleHold(true)
+// returns once the line another task was in the middle of is out.
+void consoleHold(bool hold);
+
 #define LOGF(tag, fmt, ...)                                                                        \
   do {                                                                                             \
     if (logBegin()) {                                                                              \

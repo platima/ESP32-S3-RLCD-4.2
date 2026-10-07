@@ -72,6 +72,7 @@ struct Settings {
   uint8_t cpuSpeed = CPU_80;
   uint8_t cpuIdle = CPUIDLE_OFF;  // the CPU clock while the radio is off; off = no change (untried on the board)
   uint8_t console = CONSOLE_ON;   // the USB serial console; auto and off shut it down (untried on the board)
+  bool powerLog = false;          // a line of readings in the clock's flash every ten minutes (power_log.h; untried on the board)
   // --- weather ------------------------------------------------------------------
   int32_t weatherIntervalMin = 15;
 

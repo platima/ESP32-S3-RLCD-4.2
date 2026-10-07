@@ -25,6 +25,7 @@
 #include <sys/time.h>
 
 #include "ST7305_U8g2.h"
+#include "app_power_log.h"
 #include "app_settings.h"
 #include "app_state.h"
 #include "battery_est.h"
@@ -649,6 +650,11 @@ static void buildInfoPower(UiModel &m, const SharedState &s) {
     snprintf(v, sizeof v, "unknown: set battery_capacity_mah");
   }
   add("Current", v);
+  {  // the power log, when it is on (and what became of its copy to an SD card at this start)
+    char rows[2][powerlog::kStatusRow];
+    const int count = powerlog::statusRows(powerLogStatus((uint32_t)(esp_timer_get_time() / 1000000)), rows);
+    for (int i = 0; i < count; i++) add(i == 0 ? "Log" : "", rows[i]);
+  }
   if (!g_cfg.hasBattery()) {
     snprintf(v, sizeof v, "off: no battery in use");
   } else if (!g_cfg.lowBatteryShutdown) {
@@ -678,7 +684,8 @@ static void buildInfoPower(UiModel &m, const SharedState &s) {
   char sum[96];
   cfgSummary(sum, sizeof sum);
   add("Config", sum);
-  for (int i = 0; i < cfgIssueCount() && i < 3; i++) {
+  // (up to three of them, and fewer on a page that is nearly full: the last row is kept for the Units line)
+  for (int i = 0; i < cfgIssueCount() && i < 3 && n < UI_INFO_LINES - 1; i++) {
     cfgIssueText(i, v, sizeof v);
     add("", v);
   }
@@ -686,6 +693,51 @@ static void buildInfoPower(UiModel &m, const SharedState &s) {
            dateFormatName(g_cfg.dateFormat), g_cfg.showWeek ? ", weeks" : "");
   add("Units", v);
   m.infoCount = n;
+}
+
+// POWER LOG: the readings of the two pages above as plain values (power_log.h makes the line of CSV), so that
+// the clock writes down by itself what would otherwise be copied off its screen by hand.
+static void buildPowerLogReading(powerlog::Reading &r, uint32_t nowSec) {
+  bool trusted;
+  {
+    StateLock lock;
+    trusted = g_state.timeTrusted;
+    r.spotify = g_state.spotify.status;
+    r.radioSync = g_state.radioSync && g_cfg.wifi;  // (as the Radio line: only with wifi_mode = sync)
+    r.radioOnPermille = g_state.radioOnPermille;
+    r.radioSessions = g_state.radioSessions;
+  }
+  r.version = APP_VERSION;
+  r.buildId = fwBuildId();
+  r.settings = &g_cfg;
+  const time_t now = time(nullptr);
+  r.timeValid = trusted && now > kMinPlausibleEpoch;
+  if (r.timeValid) localtime_r(&now, &r.local);
+  r.uptimeSec = nowSec;
+  r.cpuMhz = (int)getCpuFrequencyMhz();
+  r.clockReason = g_cfg.cpuIdleMhz() > 0 ? s_clockReason : "";  // (as the Power line: a reason only with an idle clock)
+  r.batteryPresent = s_batHave;
+  r.batteryVolts = s_batVolts;
+  r.charge = s_chargeState;
+  r.chargeWarmingUp = s_charge.warmingUp();
+  r.chargeReady = s_charge.ready();
+  if (s_batHave) r.estimate = s_est.estimate(g_cfg.batteryCutoffV, (float)g_cfg.batteryCapacityMah);
+  r.freeHeapBytes = ESP.getFreeHeap();
+  r.framesSent = s_timing.frames;
+  r.framesLate = s_timing.late;
+  r.framesWorstMs = s_timing.worstLateUs / 1000;
+}
+
+// The power log: a line a few seconds after the start and every ten minutes after that (power_log.h).
+// Writing one holds the loop up for a tenth of a second or a few while the flash is erased and written, so it
+// is only begun early in a second, when the frame of the next one is not due for a long while.
+static void servicePowerLog(int32_t usec) {
+  if (usec > powerlog::kLatestStartUs) return;
+  const uint32_t nowSec = (uint32_t)(esp_timer_get_time() / 1000000);  // (from the 64-bit timer, as the estimate's time is)
+  if (!powerLogDue(nowSec)) return;
+  powerlog::Reading r;
+  buildPowerLogReading(r, nowSec);
+  powerLogWrite(r, nowSec);
 }
 
 // The moon today and on the next two days at this time of day; the series costs a millisecond
@@ -1018,6 +1070,8 @@ static void serviceSerial() {
                       (unsigned)s_timing.frames, (unsigned)s_timing.late, (int)(s_timing.worstLateUs / 1000),
                       (unsigned)s_planner.drawCostUs(), (unsigned)s_planner.sendCostUs(), (unsigned)s_timing.clockSteps,
                       (int)(s_timing.lastStepUs / 1000));
+      } else if (!strncmp(buf, "powerlog", 8)) {  // the power log as CSV, or "powerlog clear"
+        powerLogCommand(buf + 8, Serial);
       } else if (!strcmp(buf, "power")) {
         SharedState s;
         {
@@ -1038,6 +1092,13 @@ static void serviceSerial() {
                       buttonEdgesOn() ? "read by interrupt as well (idle clock)" : "read by the loop",
                       s_audioStandby < 0 ? "left alone (AUDIO_CHIPS_STANDBY 0)"
                                          : (s_audioStandby == (AUDIO_CODEC_ANSWERED | AUDIO_MIC_ADC_ANSWERED) ? "both powered down" : "not both answered (see the start of the log)"));
+        char rows[2][powerlog::kStatusRow];
+        const int count = powerlog::statusRows(powerLogStatus((uint32_t)(esp_timer_get_time() / 1000000)), rows);
+        uint32_t lastMs, worstMs;  // what a line costs in time: the flash is busy for most of it
+        powerLogTimings(&lastMs, &worstMs);
+        Serial.printf("power log: %s%s%s", count > 0 ? rows[0] : "off", count > 1 ? "; " : "", count > 1 ? rows[1] : "");
+        if (worstMs > 0) Serial.printf("; the last line took %u ms to write, the slowest %u ms", (unsigned)lastMs, (unsigned)worstMs);
+        Serial.println();
       } else if (!strcmp(buf, "battery")) {
         char est[64];
         estimateText(est, sizeof est);
@@ -1056,7 +1117,7 @@ static void serviceSerial() {
         Serial.printf("wifi=%d rssi=%d ip=%s synced=%d zone=%s status='%s' spotify=%d '%s'\n", s.wifiUp, s.rssi,
                       s.ip, s.ntpSynced, s.tzPosix, s.status, (int)s.spotify.status, s.spotify.message);
       } else {
-        Serial.println("commands: status | battery | batcal V | power | config | set name = value | timing | fw | rollback | fwforget | refresh | page N | invert | unlink | sleeptest | reboot");
+        Serial.println("commands: status | battery | batcal V | power | powerlog | powerlog clear | config | set name = value | timing | fw | rollback | fwforget | refresh | page N | invert | unlink | sleeptest | reboot");
       }
     } else if (len < sizeof buf - 1) {
       buf[len++] = c;
@@ -1287,6 +1348,7 @@ void setup() {
   if (g_cfg.cpuIdleMhz() > 0) buttonEdgesBegin();  // a frame at the idle clock can outlast a tap: the buttons by interrupt too
   initDisplay();
   fwUpdateFromCard(showFirmwareScreen);  // a firmware file on the card: install it and restart (else carry on)
+  powerLogBegin();                       // power_log = on: the flash partition the log is kept in
   s_guard.configure(g_cfg.lowBatteryShutdown && g_cfg.hasBattery() && !s_guardOverride, g_cfg.batteryCutoffV);
   announceConfig();
   char summary[96];
@@ -1338,6 +1400,7 @@ void loop() {
     renderFrame(tv.tv_sec, tv.tv_usec / 1e6f);
   } else {
     if (1000000 - (int32_t)tv.tv_usec > 300000) readSlowSensors(nowMs);
+    servicePowerLog((int32_t)tv.tv_usec);
     delay(4);
   }
 #else
@@ -1358,6 +1421,7 @@ void loop() {
       break;
     default:
       if (s_planner.quiet((int32_t)tv.tv_usec)) readSlowSensors(nowMs);  // never close to a tick
+      servicePowerLog((int32_t)tv.tv_usec);                               // (nor this: only early in a second)
       delay(4);
       break;
   }
