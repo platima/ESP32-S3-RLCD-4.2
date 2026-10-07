@@ -446,7 +446,10 @@ static void buildInfoSystem(UiModel &m, const SharedState &s, uint32_t nowMs, ti
 
   char built[16];
   buildDateIso(built, sizeof built);
-  snprintf(v, sizeof v, APP_NAME " " APP_VERSION " (built %s)", built);
+  // (the date is that of the day this file was compiled; the build id changes whenever the program does)
+  static_assert(sizeof(APP_NAME " " APP_VERSION ", 2026-10-07, build 0123456") - 1 <= UI_INFO_LINE_LEN - 12,
+                "the Firmware row of the Info page would be cut short: APP_NAME or APP_VERSION is too long for it");
+  snprintf(v, sizeof v, APP_NAME " " APP_VERSION ", %s, build %s", built, fwBuildId());
   add("Firmware", v);
   uint32_t trialLeft;
   if (fwOnTrial(nowMs, &trialLeft)) {  // just installed from the SD card: a reset now puts the old one back
@@ -1237,7 +1240,7 @@ void setup() {
   cfgLoadFlash();        // the defaults, then what the clock saved in its flash
   applyCpuSetting();     // 80 MHz unless the settings say otherwise: a clock needs no more
   lowBatteryGate();      // may put the clock straight back to sleep
-  LOGF(TAG, APP_NAME " " APP_VERSION " starting, %u MHz%s", (unsigned)getCpuFrequencyMhz(), psramFound() ? ", PSRAM on" : "");
+  LOGF(TAG, APP_NAME " " APP_VERSION " (build %s) starting, %u MHz%s", fwBuildId(), (unsigned)getCpuFrequencyMhz(), psramFound() ? ", PSRAM on" : "");
 
   stateInit();
 #if PIN_CHARGE_STATUS >= 0

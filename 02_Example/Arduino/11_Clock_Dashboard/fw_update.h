@@ -20,6 +20,12 @@
 // Who are we: on trial or not, was the last update rolled back.  First thing in setup().
 void fwBegin();
 
+// The build that runs: the first seven hex digits of the hash that also tells builds apart for the updater
+// (the serial command "fw" prints sixteen).  It changes whenever the program does, which a version number
+// and a date do not.  The hash is that of the whole ELF file, debug information and all, and that names the
+// folder it was built in: the same sources built in another folder, or on another computer, get another id.
+const char *fwBuildId();
+
 // Called while the card is mounted for the settings file: notes which firmware files are on it.
 void fwScanCard();
 

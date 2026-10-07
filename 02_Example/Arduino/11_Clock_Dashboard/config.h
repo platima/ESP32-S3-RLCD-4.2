@@ -16,7 +16,10 @@
 // ============================================================================
 
 #define APP_NAME "RLCD Clock"
-#define APP_VERSION "1.3"  // not semver: 1.0 was the first release, bumped by hand
+// Not semver: 1.0 was the first release, and the number goes up by hand with every batch of changes that is
+// handed over to run on a board (README: "Versions").  Two builds of one version are told apart by the build
+// id next to it on the System info page, which changes whenever the program does.
+#define APP_VERSION "1.4"
 
 // The settings file the clock looks for in the root of the SD card, and writes (with every
 // setting explained) when the card has none.  Upper or lower case, it is FAT.

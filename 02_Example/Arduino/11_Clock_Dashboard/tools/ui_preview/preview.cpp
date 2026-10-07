@@ -1230,7 +1230,7 @@ int main() {
   m.page = PAGE_INFO;
   m.batCharge = CHARGE_DISCHARGING;
   const char *lines[] = {
-      "Firmware  RLCD Clock 1.3 (built 2026-10-04)",
+      "Firmware  RLCD Clock 1.4, 2026-10-07, build 3f9a12c",
       "WiFi      HomeNet  -58 dBm",
       "Address   192.168.1.50  rlcd-clock.local",
       "Time      NTP synced 12 min ago, last step -38 ms",

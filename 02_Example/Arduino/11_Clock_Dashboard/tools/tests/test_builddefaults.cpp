@@ -184,6 +184,36 @@ void testFactory() {
   CHECK(dump(b) == dump(Settings()));
 }
 
+// Does the README give `v` as the version: in its first lines, and as the first entry (the newest) of its
+// list of versions?
+bool readmeHasVersion(const std::string &readme, const std::string &v) {
+  const size_t top = readme.find("Version **" + v + "**");
+  const size_t list = readme.find("\n## Versions\n");
+  if (top == std::string::npos || list == std::string::npos || top > list) return false;
+  const size_t first = readme.find("\n**", list);
+  return first != std::string::npos && readme.compare(first + 1, v.size() + 4, "**" + v + "**") == 0;
+}
+
+// APP_VERSION goes up by hand, and the README has to go with it: a number changed in one place and not
+// the other is caught here.  (Nothing can catch a number that was not changed at all.)
+void testVersionDocumented() {
+  section("version: config.h and the README agree");
+  const std::string readme = readFile("../../README.md");
+  if (!readmeHasVersion(readme, APP_VERSION)) {
+    printf("  the README does not give %s as the version (at the top, and first under 'Versions')\n", APP_VERSION);
+  }
+  CHECK(readmeHasVersion(readme, APP_VERSION));
+  // the check can fail: the number in one of the two places only, or not first in the list
+  const std::string top = "A clock. Version **7.1** (see below).\n", list = "\n## Versions\n\nBy hand.\n\n**7.1** (a day)\n\n* more\n\n**7.0**: less.\n";
+  CHECK(readmeHasVersion(top + list, "7.1"));
+  CHECK(!readmeHasVersion(top + list, "7.0"));
+  CHECK(!readmeHasVersion(top + list, "7"));
+  CHECK(!readmeHasVersion(top, "7.1"));
+  CHECK(!readmeHasVersion(list, "7.1"));
+  CHECK(!readmeHasVersion("A clock. Version **7.0**.\n" + list, "7.0"));
+  CHECK(!readmeHasVersion(list + top, "7.1"));
+}
+
 #endif
 
 }  // namespace
@@ -198,6 +228,7 @@ int main() {
   testLimits();
 #else
   testFactory();
+  testVersionDocumented();
 #endif
   printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed ? 1 : 0;

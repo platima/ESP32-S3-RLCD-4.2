@@ -2,6 +2,7 @@
 
 #include <Preferences.h>
 #include <Update.h>
+#include <esp_app_desc.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 #include <mbedtls/sha256.h>
@@ -146,6 +147,12 @@ const char *installFrom(int fd, uint32_t size, const char *detail, FwShowFn show
 }
 
 }  // namespace
+
+const char *fwBuildId() {
+  static char id[8] = "";
+  if (!id[0]) esp_app_get_elf_sha256(id, sizeof id);  // (as many hex digits as fit: seven)
+  return id;
+}
 
 void fwBegin() {
   const esp_partition_t *run = esp_ota_get_running_partition();

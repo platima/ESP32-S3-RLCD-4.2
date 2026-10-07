@@ -1,7 +1,8 @@
 # 11_Clock_Dashboard
 
 A desk clock for the Waveshare ESP32-S3-RLCD-4.2: it joins your WiFi, sets the time over NTP, works out the
-time zone (including daylight saving) by itself, and shows everything on the reflective LCD. Version **1.3**.
+time zone (including daylight saving) by itself, and shows everything on the reflective LCD. Version **1.4**
+([what changed](#versions)).
 
 <img src="docs/dashboard.png" alt="Dashboard" width="560">
 
@@ -21,11 +22,13 @@ time zone (including daylight saving) by itself, and shows everything on the ref
 
 > **Status.** The first version of this sketch (clock, weather, indoor sensor, battery gauge, display) has run on the
 > real board, and so have the 80 MHz setting and the frame timing described under [Power](#power) (measured by the
-> board's owner). Everything added in 1.3, **the SD card settings, the shutdown and the runtime estimate, the clock
-> drift measurement, the moon, the new screens**, as well as the Spotify linking flow, the charging indicator and the
-> frame scheduler from earlier, has so far only been checked on a PC (renderer, fuzz test, simulations, tens of thousands
-> of host-side checks) and compiled for the board. [Not yet tried on the board](#not-yet-tried-on-the-board) lists what
-> that means, and [Troubleshooting](#troubleshooting) says what to look at if a first guess is off.
+> board's owner). Nearly everything added in 1.3 and 1.4, **the SD card settings, the shutdown and the runtime
+> estimate, the clock drift measurement, the moon, the new screens, the firmware update from the card, the backup
+> network, everything under [Saving power](#saving-power)**, as well as the Spotify linking flow, the charging indicator
+> and the frame scheduler from earlier, has so far only been checked on a PC (renderer, fuzz test, simulations, tens of
+> thousands of host-side checks) and compiled for the board. [Not yet tried on the board](#not-yet-tried-on-the-board)
+> lists what that means and the little that has been seen there, and [Troubleshooting](#troubleshooting) says what to
+> look at if a first guess is off.
 
 ## Quick start
 
@@ -222,8 +225,16 @@ How it stays safe:
   A USB upload always works, whatever happened to the slots.
 * There is **no signing**: whoever can put a file on the card can change the firmware, as whoever has a USB cable can.
 
-Serial console: `fw` shows what runs and what is in the other slot, `rollback` switches to the other slot now (and restarts),
-`fwforget` clears the memory of the last build installed from the card.
+**Which build is running?** The first line of the *System info* page says, for example, `RLCD Clock 1.4, 2026-10-07,
+build 3f9a12c`: the [version](#versions), the day it was compiled, and a **build id**. The version only changes when
+someone changes it and a day can see many builds; the id changes whenever the program does. It is the start of the
+hash by which the updater tells builds apart: the SHA-256 of the `.ino.elf` that is built along with the `.ino.bin`
+(`Get-FileHash` in PowerShell, `sha256sum` elsewhere), so you can tell which file a clock runs. The same sources built
+in another folder (and so, as a rule, on another computer) get another id: the hash covers the debug information, and
+that names the folders.
+
+Serial console: `fw` shows what runs and what is in the other slot (with sixteen digits of each build id), `rollback`
+switches to the other slot now (and restarts), `fwforget` clears the memory of the last build installed from the card.
 
 If you leave **WiFi off**, nothing corrects the clock any more: it starts from the hardware RTC and then counts with its
 own crystal. A clock crystal is good for a second or two a day, depending on the temperature; the clock **measures its own
@@ -746,7 +757,7 @@ down, no statement about its state after power-on was found, which is why both a
 | White text on a black screen | Hold BOOT for a second (remembered), or set `DISPLAY_INK_IS_BLACK 0` in `config.h`. The default follows Waveshare's LVGL port and the ESPHome ST7305 driver (a set bit is white), so this should not be needed |
 | Stuck on *Connecting to WiFi...* | Wrong name or password, or a 5 GHz-only network. With a backup network set the clock alternates between the two every 20 seconds, so check both |
 | *Too big (the .merged.bin? use the .ino.bin)* on the firmware screen | The card holds the `….merged.bin` that the IDE exports next to the real firmware; copy `11_Clock_Dashboard.ino.bin` instead |
-| *Cannot read the file (card error)* on the firmware screen, with the bar almost full | If it happens on every file: the firmware on the clock is a build from before 7 October 2026, whose updater checked the file from the wrong place. Nothing was written. Upload the current build once over USB; from then on the card works. Otherwise it is what it says: copy the file again, or try another card |
+| *Cannot read the file (card error)* on the firmware screen, with the bar almost full | If it happens on every file: the clock runs version 1.3 (a build from before 7 October 2026), whose updater checked the file from the wrong place. Nothing was written. Upload the current build once over USB; from then on the card works. Otherwise it is what it says: copy the file again, or try another card |
 | *This build was installed from the card before* | The card still holds a file the clock installed (and the firmware has since changed). Build again (every build is different), or type `fwforget` in the serial console |
 | The Info page says *the last SD card update was rolled back* | The new firmware reset within its first minute, so the bootloader went back to the old one. Watch the new build's log over USB, fix it and try again |
 | The Info page says *(backup)* | The main network could not be joined (or was out of range). The clock looks for it every 10 minutes and goes back by itself, see [A backup network](#a-backup-network) |
@@ -814,7 +825,10 @@ Written and tested on a PC (and compiled), never run on the real board:
   mistake in the updater itself (it checked the file from the wrong place and ran out of it at the end). That is fixed,
   and the two passes over the file now run on a PC against a made-up file and flash, the mistake included; what to do
   with a file is tested against the header of a real exported build. The flash writing and the bootloader are not. **A
-  clock that runs a build from before that fix cannot be updated from the card: it needs one upload over USB;**
+  clock that runs a build from before that fix (version 1.3) cannot be updated from the card: it needs one upload over
+  USB;**
+* the build id on the *System info* page: that it is the start of the hash stored in the firmware file was checked on
+  an exported build, the call that reads it on the clock has not been seen to answer;
 * the new screens on the real panel (the renders are exact, the panel is not: its contrast and refresh are not modelled);
 * a built-in default that is refused (a typo in `secrets.h`) on the screen: the banner at start-up and the rows on the
   *Power and settings* page. Which values are refused and what the message says is tested on a PC; showing it uses the
@@ -890,7 +904,7 @@ build the sketch.
   the SHTC3 CRC, battery curve and humidity maths, the Open-Meteo and Spotify parsers against fixtures (including a
   recorded replies for Perth), PKCE encoding against the RFC 7636 test vector, the setup page, the button gesture detector,
   the charging detector on simulated voltage traces and the frame scheduler on a simulated UI loop (`test_logic`); and
-  the 1.3 features (`test_features`): the settings file parser (what people type, bad values, reset, UTF-16, 3000 fuzzed
+  what came with 1.3 and after (`test_features`): the settings file parser (what people type, bad values, reset, UTF-16, 3000 fuzzed
   files), the example file (it parses back to the same settings, hides passwords, and matches `docs/`), the moon against
   28 published phases, the date formats, the runtime estimate, the shutdown guard and the clock drift measurement on
   simulated data. `test_radio` covers the power logic: the radio sessions of `wifi_mode = sync` driven by hand and by a
@@ -900,7 +914,7 @@ build the sketch.
   `secrets.h`: nothing set (the factory build must equal the settings' own defaults), everything set (the result must
   equal the SD file `all_settings.h`, setting by setting, so a setting without a build-time default is named), mistakes
   (refused and reported) and values on the limits; it also checks that each macro is documented here and in
-  `secrets.example.h`. While they were written, the tests were checked by breaking the code in 50 ways and watching
+  `secrets.example.h`, and that the version in `config.h` is the one this README gives. While they were written, the tests were checked by breaking the code in 50 ways and watching
   them fail (and the build defaults in 70 more, the power logic in 80, the button and settings code that came with it
   in 23). Set
   `ARDUINOJSON_SRC` to ArduinoJson's `src` folder if it is not in `~/Arduino/libraries`.
@@ -914,6 +928,34 @@ build the sketch.
 * **`tools/spotify_link.py`** is the helper script; `python tools/gen_helper_header.py` regenerates
   `spotify_helper_script.h` from it (`--check` verifies they match; the tests do too).
 * **`tools/gen_tz_table.py`** regenerates `tz_table.cpp` from the tz database.
+
+## Versions
+
+`APP_VERSION` in `config.h`. It is not semver: the number goes up by hand with each batch of changes that is handed
+over to run on a board. The *System info* page shows it together with a build id, which tells two builds of one version
+apart (*Which build is running?* under [Updating the firmware from the SD card](#updating-the-firmware-from-the-sd-card)).
+
+**1.4** (7 October 2026)
+
+* **Saving power:** `wifi_mode = sync` (the radio is on only for the syncs, with a rule of its own for a network that is
+  not there), `cpu_idle_mhz`, `spotify_live`, `console`, and the unused audio chips powered down, see
+  [Saving power](#saving-power).
+* **Battery:** the voltage can be calibrated (`battery_calibration`, `batcal`), the charging bolt sits inside the gauge,
+  and a full battery that is unplugged no longer reads as *full* for hours.
+* **Settings:** everything the card can set also has a build-time default for `secrets.h`, see
+  [Building the settings in](#building-the-settings-in).
+* **SD card:** hold KEY for five seconds to restart the clock, which reads the card; a card that will not mount says why
+  (a GUID partition table, exFAT, ...).
+* **Fixed:** the firmware update from the card, which in 1.3 stopped on every file with *Cannot read the file (card
+  error)*, so **going from 1.3 to 1.4 takes one upload over USB**; Spotify's timers after 25 days without a restart.
+* The build id on the *System info* page.
+
+**1.3** (5 October 2026), the version the sketch was first published as: settings from an SD card, the firmware update
+from the card, a backup network, the chance of rain and the moon in the weather band, the legend page, the runtime
+estimate, the low-battery shutdown, the clock drift measurement, the date formats.
+
+**1.0 to 1.2** were never published and are not in this repository's history: the clock, the weather, the indoor sensor
+and the battery gauge first, then Spotify, the charging indicator and the frame timing.
 
 ## Credits and licences
 
