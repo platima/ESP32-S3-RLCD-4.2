@@ -54,6 +54,14 @@
 // minutes after boot).  FULL means "sitting flat at the top of the curve", which
 // is what a charger holding the cell at 4.2 V looks like; it also reads as full
 // for a while after unplugging a full battery (an hour or two with a light load).
+//
+// FULL is said only of a cell that was seen charging up to its plateau, or that has
+// not come down for 160 minutes of the slow history.  Twelve flat minutes alone say
+// nothing: a clock started on its battery with a nearly full cell is just as flat
+// (found on the board at 99 %: FULL eleven minutes after the start, for hours).  So
+// UNKNOWN is also what a clock on its battery says for as long as the fall is too
+// slow to see, which under a light load is for good; whoever asks "is a charger
+// there?" should take CHARGING and FULL for yes and the other two for no.
 // Pure logic with no Arduino dependency; tools/tests simulates plausible traces.
 
 #include <math.h>
@@ -89,8 +97,10 @@ class ChargeDetector {
   static constexpr int kSlowBins = 48;
   static constexpr int kSlowSettle = 1;               // the first five minutes of FULL are not part of the plateau
   static constexpr float kLongDropV = 0.013f;         // a slow level this far below the plateau ends FULL
-  static constexpr int kSlowFlatLen = 16;             // over the last 80 minutes, the first four slow levels against the last four:
+  static constexpr int kSlowFlatLen = 16;             // over the last 80 minutes, the newest four slow levels against the highest four in a row:
   static constexpr float kSlowFlatDropV = 0.0012f;    // ... no more than this lower, and FULL may come back
+  static constexpr int kSlowSteadyLen = 32;           // over the last 160 minutes, the newest eight slow levels against the highest eight in a row:
+  static constexpr float kSlowSteadyDropV = 0.0012f;  // ... no more than this lower: nothing draws on the cell (FULL without having seen a charge)
   static constexpr int kTrendLen[3] = {8, 16, 32};    // windows of the slow trend shown on the Info page
 
   // Feed one voltage reading (volts) every few seconds.
@@ -212,8 +222,7 @@ class ChargeDetector {
         }
       }
     }
-    if (fullBlocked_ && n >= kSlowFlatLen && slowMean(n - kSlowFlatLen, 4) - slowMean(n - 4, 4) <= kSlowFlatDropV)
-      fullBlocked_ = false;
+    if (fullBlocked_ && slowNotFallen(kSlowFlatLen, 4, kSlowFlatDropV)) fullBlocked_ = false;
   }
 
   // The highest of slow_[lo..hi): the plateau.
@@ -224,12 +233,26 @@ class ChargeDetector {
     return mx;
   }
 
-  // Mean of the `count` slow levels from index lo.
-  float slowMean(int lo, int count) const {
+  // Has the level not come down over the last `len` slow levels?  The mean of the newest `k` is compared with
+  // the highest mean of `k` in a row among them.  With the highest, not the oldest: a charge that ended inside
+  // the window starts low, and the fall of a cell that was unplugged right after it would then pass for "no
+  // lower than before".
+  bool slowNotFallen(int len, int k, float dropV) const {
+    const int n = slowCount_;
+    if (n < len) return false;
     float sum = 0;
-    for (int i = lo; i < lo + count; i++) sum += slow_[i];
-    return sum / (float)count;
+    for (int i = n - len; i < n - len + k; i++) sum += slow_[i];
+    float top = sum;
+    for (int i = n - len + k; i < n; i++) {  // slide the window of k up to the newest
+      sum += slow_[i] - slow_[i - k];
+      if (sum > top) top = sum;
+    }
+    return (top - sum) / (float)k <= dropV;  // (`sum` is now that of the newest k)
   }
+
+  // Has the cell held its level for the last 160 minutes?  A cell that carries the clock has not, however light
+  // the load: 0.03 mV a minute (5 mA from a 2500 mAh cell at the top of the curve) is 3.6 mV in that time.
+  bool slowSteady() const { return slowNotFallen(kSlowSteadyLen, 8, kSlowSteadyDropV); }
 
   // Least-squares slope of slow_[lo..hi) in volts per minute.
   float slowSlope(int lo, int hi) const {
@@ -314,8 +337,13 @@ class ChargeDetector {
       state_ = DISCHARGING;
     }
     // Flat at the top of the curve: a charger is holding the cell full.  (Not while the slow history says the
-    // cell is falling: a light load makes that look flat in twelve minutes.)
-    if (flat && level >= kFullV && !fullBlocked_) {
+    // cell is falling: a light load makes that look flat in twelve minutes.)  Twelve flat minutes say "held"
+    // only of a cell that was seen being charged up to here.  Of any other they say nothing: a clock that is
+    // started on a nearly full cell, with no charger, looks just as flat (0.03 to 0.1 mV a minute under a light
+    // load), and calling that full hid the fall, and with it the runtime estimate, for hours.  Without a charge
+    // the slow history has to agree: no fall in 160 minutes.
+    const bool held = state_ == FULL || state_ == CHARGING || slowSteady();
+    if (flat && level >= kFullV && !fullBlocked_ && held) {
       fullRef_ = (state_ == FULL) ? fullRef_ + 0.02f * (level - fullRef_) : level;  // follow the plateau slowly
       if (state_ != FULL) fullSince_ = slowTotal_;
       state_ = FULL;

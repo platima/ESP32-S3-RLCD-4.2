@@ -178,6 +178,18 @@ static double startupSag(double minutes, double sagMv) {
   return minutes < 1.0 ? sagMv : (minutes < 2.5 ? sagMv * (2.5 - minutes) / 1.5 : 0.0);
 }
 
+// How a clock comes to FULL: a charge is seen, from 4.10 V at 3 mV a minute up to a plateau of 4.19 V, which the
+// charger then holds (an hour in all; the detector says FULL some twelve minutes after the voltage stops).  A cell
+// that is merely flat near the top when the clock starts is not called full for 160 minutes.
+static bool chargeToFull(Sim &s) {
+  const double t0 = s.now();
+  s.run(60, [t0](double m) {
+    const double x = 4.10 + 0.003 * (m - t0);
+    return x > 4.19 ? 4.19 : x;
+  });
+  return s.d.state() == CS::FULL;
+}
+
 int main(int argc, char **argv) {
   if (argc > 1) N = atoi(argv[1]);
   if (argc > 2) g_only = atoi(argv[2]);
@@ -253,12 +265,17 @@ int main(int argc, char **argv) {
       return s.firstAt[DIS];
     });
   }
-  latency("booted at a flat 4.18 V -> FULL", [](Sim &s) {
-    s.run(40, [](double) { return 4.18; });
+  // (no charge was seen, so twelve flat minutes are not enough: the slow history has to show 160 minutes without a fall)
+  latency("booted at a flat 4.18 V (on a charger, full) -> FULL", [](Sim &s) {
+    s.run(300, [](double) { return 4.18; });
     return s.firstAt[FUL];
   });
-  latency("booted at a flat 4.20 V -> FULL", [](Sim &s) {
-    s.run(40, [](double) { return 4.20; });
+  latency("booted at a flat 4.20 V (on a charger, full) -> FULL", [](Sim &s) {
+    s.run(300, [](double) { return 4.20; });
+    return s.firstAt[FUL];
+  });
+  latency("booted on a charger, full, cell still relaxing (8 mV, tau 30 min) -> FULL", [](Sim &s) {
+    s.run(480, [](double m) { return 4.19 + 0.008 * exp(-m / 30.0); });
     return s.firstAt[FUL];
   });
   latency("charging reaches 4.2 V at minute 33 -> FULL (minutes after)", [](Sim &s) {
@@ -274,7 +291,7 @@ int main(int argc, char **argv) {
     char name[96];
     snprintf(name, sizeof name, "unplugged when full, falls at %.1f mV/min -> DISCHARGING", r);
     latency(name, [r](Sim &s) {
-      s.run(25, [](double) { return 4.19; });
+      chargeToFull(s);
       const double t0 = s.now();
       s.clearSeen();
       s.run(80, [=](double m) { return 4.19 - r / 1000 * (m - t0); });
@@ -287,7 +304,7 @@ int main(int argc, char **argv) {
     char name[96];
     snprintf(name, sizeof name, "unplugged when full, light load, falls at %.2f mV/min -> DISCHARGING", r);
     latency(name, [r](Sim &s) {
-      s.run(25, [](double) { return 4.19; });
+      chargeToFull(s);
       const double t0 = s.now();
       s.clearSeen();
       s.run(600, [=](double m) { return 4.19 - r / 1000 * (m - t0); });
@@ -298,7 +315,7 @@ int main(int argc, char **argv) {
     char name[96];
     snprintf(name, sizeof name, "unplugged when full with a 7 mV IR step, light load, falls at %.2f mV/min", r);
     latency(name, [r](Sim &s) {
-      s.run(25, [](double) { return 4.19; });
+      chargeToFull(s);
       const double t0 = s.now();
       s.clearSeen();
       s.run(600, [=](double m) { return 4.19 - 0.007 - r / 1000 * (m - t0); });
@@ -309,7 +326,7 @@ int main(int argc, char **argv) {
     char name[96];
     snprintf(name, sizeof name, "unplugged when full with a %.0f mV IR step, then -1 mV/min", drop);
     latency(name, [drop](Sim &s) {
-      s.run(25, [](double) { return 4.19; });
+      chargeToFull(s);
       const double t0 = s.now();
       s.clearSeen();
       s.run(60, [=](double m) { return 4.19 - drop / 1000 - 0.001 * (m - t0); });
@@ -346,7 +363,7 @@ int main(int argc, char **argv) {
     return (s.seen & (1u << CHG)) ? 1 : 0;
   });
   rate("held full at 4.19 V: state changes after reaching FULL", "should be 0", [&](Sim &s) {
-    s.run(25, [](double) { return 4.19; });
+    chargeToFull(s);
     s.clearSeen();
     s.run(480, [](double) { return 4.19; });
     return s.changes;
@@ -356,17 +373,33 @@ int main(int argc, char **argv) {
     char name[96];
     snprintf(name, sizeof name, "held full after the charger ends, 8 mV tail (tau %.0f min): changes", tau);
     rate(name, "should be 0", [tau](Sim &s) {
-      s.run(25, [tau](double m) { return 4.19 + 0.008 * exp(-m / tau); });
+      const double top = (4.198 - 4.10) / 0.003;  // the minute the charge reaches its end and the cell starts to relax
+      auto f = [=](double m) { return m < top ? 4.10 + 0.003 * m : 4.19 + 0.008 * exp(-(m - top) / tau); };
+      s.run(top + 3 * tau + 25, f);  // (called FULL once the tail has flattened)
+      const bool full = s.d.state() == CS::FULL;
       s.clearSeen();
-      s.run(480, [tau](double m) { return 4.19 + 0.008 * exp(-(m + 25) / tau); });
-      return s.changes;
+      s.run(480, f);
+      return s.changes + (full ? 0 : 100);  // 100 = it was not FULL to begin with
     });
   }
+  // A clock started on its battery with the cell nearly full: flat for twelve minutes, and not held by anything.
+  for (double r : {0.12, 0.07, 0.05, 0.03}) {
+    char name[96];
+    snprintf(name, sizeof name, "booted on battery at 4.19 V falling %.2f mV/min, 16 h: FULL or CHARGING", r);
+    rate(name, "should be 0", [r, powerBits](Sim &s) {
+      s.run(960, [r](double m) { return 4.19 - r / 1000 * m; });
+      return (s.seen & powerBits) ? 1 : 0;
+    });
+  }
+  rate("booted on battery at 4.19 V falling 0.02 mV/min (a month's drain), 16 h: FULL", "informational", [FUL](Sim &s) {
+    s.run(960, [](double m) { return 4.19 - 0.00002 * m; });
+    return (s.seen & (1u << FUL)) ? 1 : 0;
+  });
   for (double dipMv : {13.0, 25.0}) {  // a cable knocked loose and pushed back: four minutes low, every hour or so
     char name[96];
     snprintf(name, sizeof name, "held full with a four minute dip of %.0f mV every hour or so: changes", dipMv);
     rate(name, "informational: the twelve minute trend says discharging for a while", [dipMv](Sim &s) {
-      s.run(25, [](double) { return 4.19; });
+      chargeToFull(s);
       s.clearSeen();
       double dipAt = 20 + 50 * s.uniform();
       s.run(480, [&](double m) {
@@ -377,7 +410,7 @@ int main(int argc, char **argv) {
     });
   }
   rate("held full with random level shifts within +-4 mV every ~40 min: changes", "should be 0", [&](Sim &s) {
-    s.run(25, [](double) { return 4.19; });
+    chargeToFull(s);
     s.clearSeen();
     double level = 0, next = 40;
     s.run(480, [&](double m) {
@@ -390,7 +423,7 @@ int main(int argc, char **argv) {
     return s.changes;
   });
   rate("held full with random level shifts within +-8 mV every ~40 min: changes", "informational: may read as a fall", [&](Sim &s) {
-    s.run(25, [](double) { return 4.19; });
+    chargeToFull(s);
     s.clearSeen();
     double level = 0, next = 40;
     s.run(480, [&](double m) {

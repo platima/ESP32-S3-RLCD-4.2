@@ -301,4 +301,27 @@ class Estimator {
   bool started_ = false;
 };
 
+// When the estimator is fed: while the clock runs on its battery as far as anyone can tell, which is whenever
+// nothing shows a charger (the charge detector says neither "charging" nor "held full").  Waiting for the
+// detector to say "discharging" will not do: under a light load the voltage falls too slowly for it ever to
+// say so (0.05 mV a minute against the 0.3 it asks for in twelve minutes), and nothing would be estimated at
+// all.  The history starts afresh whenever a charger comes or goes.
+class Gate {
+ public:
+  // One battery reading.  `charger`: one shows.  Returns true if the reading went to the estimator.
+  bool feed(Estimator &est, bool haveBattery, bool charger, uint32_t nowSec, float volts) {
+    const bool on = haveBattery && !charger;
+    if (on != on_) {
+      est.reset();
+      on_ = on;
+    }
+    if (on) est.add(nowSec, volts);
+    return on;
+  }
+  bool onBattery() const { return on_; }
+
+ private:
+  bool on_ = false;
+};
+
 }  // namespace battest

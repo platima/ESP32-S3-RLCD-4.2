@@ -458,6 +458,12 @@ an LED), so `charge.h` works it out from how the battery voltage moves:
   once; unplugging steps it down. A step of 40 mV or more that stays is spotted about a minute after the cable moves;
 * while charging the voltage climbs 1.5 mV per minute or more; on the battery it falls (steeply near full, slowly in the
   flat middle of the curve); a charger that has finished holds it flat near 4.2 V, which is shown as full;
+* **flat at the top is only called *full* when the clock saw the charge that led there**, or when the cell has not
+  fallen for some three hours. A clock that is started on its battery with a nearly full cell looks every bit as flat
+  for twelve minutes (the radio mostly off, the top of the curve falls by 0.03 to 0.1 mV a minute), and up to 1.4 that
+  was called *full* eleven minutes after every such start, and stayed so for hours (found on the board, at 99 %). With
+  no sign of a charger the clock now shows no icon and takes itself to be on its battery (the *System info* page says
+  *on battery?*, and *discharging* once it has seen the voltage fall, which under a light load may be never);
 * that trend is judged over the last 12 minutes (8 before it is trusted). Readings are reduced to the upper end of each
   15 s so WiFi transmit dips do not count, and a change in load, which moves the voltage for good and fools a plain
   straight-line fit, has to be confirmed by a second fit that allows one level shift;
@@ -469,7 +475,8 @@ an LED), so `charge.h` works it out from how the battery voltage moves:
   which twelve minutes cannot tell from flat: the first version sat on *full* for hours. So one level per five minutes is
   also kept, for four hours: a charger holding the cell keeps it within a few millivolts of its plateau, a load takes it
   down for good, and **a level 13 mV below the plateau ends *full***. Once *full* has ended for any reason, flat does not
-  bring it back until the last hour has not fallen by more than 1.2 mV (a recharge, or a cell that sits still).
+  bring it back until the last hour has not come down by more than 1.2 mV (a recharge, or a cell that sits still), and
+  then only by one of the two ways above: a charge that is seen, or three hours without a fall.
 
 It is a heuristic and shows no icon rather than guess. Timings against simulated traces (noise, WiFi dips, level
 shifts; 300 random sequences each), not against the board:
@@ -478,7 +485,9 @@ shifts; 300 random sequences each), not against the board:
 | --- | --- |
 | USB plugged in or pulled out with a step of 45 mV or more | about 1 minute (not in the first ~5 minutes after boot) |
 | ... with a small step | 5 to 10 minutes |
-| After a reboot | about 13 minutes, sometimes up to 20 (the Info page says *starting up*, then *learning*) |
+| After a restart on a charger that is charging | the bolt after about 13 minutes, sometimes up to 20 (the Info page says *starting up*, then *learning*) |
+| After a restart on a charger that has finished | the tick after about three hours, four if the cell was still settling; until then no icon |
+| After a restart on the battery | no icon, which is right; the runtime estimate starts at once |
 | A full battery unplugged (no step, the voltage just starts to fall), a 1 to 2.5 mV/min fall | 7 to 15 minutes |
 | ... a 0.5 mV/min fall (about 150 mA) | 30 minutes |
 | ... a light load, a 0.3 mV/min fall (about 45 mA) | about 50 minutes, 30 with the 7 mV step an unplug usually has |
@@ -486,10 +495,19 @@ shifts; 300 random sequences each), not against the board:
 
 What it cannot do: charging slower than about 0.1C (under roughly 1.5 mV/min) is not recognised; a charger that lets the
 cell sag after it has finished looks like discharging, which for the cell it is; a sudden jump in load of 15 mV or
-more is mistaken for a few minutes of charging about once in 60 jumps; and in the first 80 minutes after a boot, before
-the slow history is long enough to bring it back, a *full* that has ended stays ended (a knock on the cable then keeps
-the tick off until the 80 minutes are up). While the icon says *full* the **Left** line says *full* and no runtime is
-worked out: a clock that is on its own starts its estimate only after the icon has changed.
+more is mistaken for a few minutes of charging about once in 60 jumps; and a *full* that has ended comes back without
+a new charge only once the cell has stopped coming down: about an hour after a brief dip (a knock on the cable that
+takes the voltage down by 13 mV), some three hours after a drop that stays, and not at all in the first three hours
+after a start, when there is no history yet to judge by.
+
+**What that means for the runtime estimate.** The estimate runs **whenever no charger shows**: the icon says neither
+charging nor full. (Up to 1.4 it waited for the clock to be *seen* discharging, which a light load never is: after a
+restart on the battery the **Left** line said *full* or *waiting* for hours, or for good.) While the icon says *full* the
+**Left** line says *full* and nothing is worked out, so a clock that is unplugged from a charger that had finished
+starts its estimate only when *full* ends: one to three hours under a light load (the table). **To start measuring at
+once, restart the clock after unplugging it** (hold KEY for five seconds): a clock that has seen nothing of a charger
+takes itself to be on its battery, and the first figure comes 50 minutes later. If it is on a charger after all, the
+line says *no drain to measure (on a charger?)* until the tick appears.
 
 The serial console command `battery` prints the voltage, the trend in mV/min, the last step and how much data the
 detector has, and the same line is logged once a minute; if the icon ever disagrees with reality those are the numbers
@@ -518,9 +536,13 @@ Current   about 32 mA (of 2500 mAh)            <- when battery_capacity_mah is s
   number of millivolts per minute depending on where on the curve the cell is (about 2 mV per percent in the middle, 15
   and more near empty), so a trend in volts means little (the same load can read *-4.4 mV/min* near the top of the curve
   and *-2.1 mV/min* lower down); a trend in percent is one steady rate all the way down.
+* It is worked out whenever no charger shows (the gauge has neither the bolt nor the tick), which after a start on the
+  battery is from the first minute: see *What that means for the runtime estimate* above for the one case that takes
+  longer, a clock unplugged from a charger that had finished.
 * Readings are boiled down to one point per five minutes (their median, so the dips of WiFi transmissions vanish), the
   first 15 minutes after the clock went onto the battery are ignored (a cell just off the charger is still settling),
-  and the first figure appears after 30 minutes of settled readings (the page says *learning: first figure in N min*).
+  and the first figure appears after 30 minutes of settled readings (the page says *learning: first figure in N min*):
+  50 minutes after a start in all.
 * The rate is a straight line through the points of the last **2 to 8 hours: long enough for the cell to lose about 20 %
   in it**, so a fast drain (a small cell, Spotify playing) is judged over about two hours and a slow one over most of a
   day. Longer is better because the middle of the curve is nearly flat: a few millivolts there are several percent, so a
@@ -784,7 +806,9 @@ down, no statement about its state after power-on was found, which is why both a
 | A setting in `secrets.h` has no effect | The clock's flash holds a value for it from an earlier SD card, and that wins over the build. `reset_all = yes` on a card forgets them, or `name =` with nothing after the `=` forgets one |
 | *N changed, NOT saved to flash* | The settings from the card are in force for this run, but the clock's flash would not take all of them (full or failing), so they are gone at the next restart. Leave the card in, or type `config` in the serial console to see what is in force |
 | The settings file is ignored | It has to be in the card's top folder and called `ESP32-S3-RLCD-Config.txt` (`ESP32-S31-RLCD-Config.txt` is accepted too, in case of a typo); the clock only looks at start-up, so restart it with the card in (hold KEY for five seconds and let go) |
-| No battery icon, or the wrong one | It takes about 13 minutes after a reboot and has limits, see [Battery](#battery); type `battery` in the serial console and look at the trend and step |
+| No battery icon, or the wrong one | No icon is what a clock on its battery shows. The bolt takes about 13 minutes after a restart, the tick about three hours if the clock did not see the charge end, and it all has limits, see [Battery](#battery); type `battery` in the serial console and look at the trend and step |
+| *Left* says *full* on a clock that runs on its battery | It watched the charge finish and has not seen the cell come down by 13 mV since, which takes one to three hours under a light load. Restart it (hold KEY for five seconds and let go): with no sign of a charger it starts measuring at once. (Up to 1.4 it also said *full*, for hours, after any restart with the cell above 96 %) |
+| *Left* says *no drain to measure (on a charger?)* | The clock has seen neither a charger nor the battery going down: either it is on a charger that has finished (the tick comes about three hours after a start) or it draws so little that a month would not empty the cell |
 | Gauge says full on USB with no battery | Say `battery = none` in the settings |
 | The gauge stops at 93 to 97 % when the cell is full (a tester says 4.20 V), or the icon never says *full* | The ADC reads a little low. Calibrate it: `batcal 4.20` in the serial console, or `battery_calibration` in the settings, see [Calibrating the voltage](#calibrating-the-voltage) |
 | *Battery empty* screen but the cell is charged | Hold KEY for 3 seconds on that screen to run anyway; check `battery_cutoff_v`; or `low_battery_shutdown = off` |
@@ -826,7 +850,10 @@ since (7 October 2026) noted item by item:
   override, and what the sleeping board draws (`sleeptest` in the serial console tries it without a flat battery);
 * a `cpu_mhz` change from the SD card file while the display is already running (the display driver has to let go of the
   SPI bus for the moment the clock speed changes; a code review found that without it the boot would hang);
-* how close the runtime estimate comes with the real cell;
+* how close the runtime estimate comes with the real cell. Seen on the board: with WiFi always on at 80 MHz it gave a
+  figure (about six days); restarted at 99 % with the radio mostly off and the processor at 20 MHz it gave none and
+  said *full*, which is what 1.5 changes. The new rules (no *full* without a charge or three still hours, the estimate
+  whenever no charger shows) are tested on simulated voltage traces, with guessed noise, and have not run on the board;
 * the clock drift measurement over real NTP syncs;
 * the backup network on the real radio: the switch when the main network cannot be joined, and the scan while connected
   that finds the main network again (the choice of network is tested on a PC, the WiFi calls are not);
@@ -931,7 +958,7 @@ build the sketch.
   (refused and reported) and values on the limits; it also checks that each macro is documented here and in
   `secrets.example.h`, and that the version in `config.h` is the one this README gives. While they were written, the tests were checked by breaking the code in 50 ways and watching
   them fail (and the build defaults in 70 more, the power logic in 80, the button and settings code that came with it
-  in 23, the banner about a card's settings in 17). Set
+  in 23, the banner about a card's settings in 17, the battery rules of 1.5 in 19). Set
   `ARDUINOJSON_SRC` to ArduinoJson's `src` folder if it is not in `~/Arduino/libraries`.
 * **`tools/tests/battery_sim.cpp`** simulates whole battery discharges to choose the constants of `battery_est.h` (see
   the file header: `g++ -std=c++17 -O2 -I../.. battery_sim.cpp`).
@@ -958,6 +985,11 @@ apart (*Which build is running?* under [Updating the firmware from the SD card](
   that had just been added (found on the board). The number of settings changed is now kept across that restart and
   the banner says *SD settings: 4 changed*. A file whose settings all apply already says *4 in force, none new*, and
   a file that is all comments *the file sets nothing*.
+* **The runtime estimate under a light load, and *full* without a charger** (found on the board: restarted on its
+  battery at 99 %, the clock said *full* and gave no estimate). Flat at the top of the curve is called *full* only
+  after a charge that the clock saw, or after three hours without a fall; and the estimate runs whenever no charger
+  shows, instead of waiting for a fall to be seen, which a clock that draws a few milliamps never showed. After a
+  start on the battery the first figure comes 50 minutes later, at any charge level. See [Battery](#battery).
 
 **1.4** (7 October 2026)
 

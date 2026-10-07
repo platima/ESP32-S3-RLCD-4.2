@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "../../battery_est.h"
 #include "../../buttons.h"
 #include "../../calc.h"
 #include "../../charge.h"
@@ -283,6 +284,8 @@ struct Sim {
   double firstAt[4] = {-1, -1, -1, -1};  // minute each state was first seen since clearSeen()
   int changes = 0;                       // state changes since clearSeen()
   CS::State last = CS::UNKNOWN;
+  void (*tap)(void *ctx, float volts, uint32_t tMs) = nullptr;  // is handed every reading after the detector had it
+  void *tapCtx = nullptr;
 
   explicit Sim(uint64_t seed) : rng(seed * 0x9E3779B97F4A7C15ull + 12345) { wander = uniform() * 6.2831853; }
   double uniform() {
@@ -308,6 +311,7 @@ struct Sim {
       double v = truth(m) + 0.004 * gauss() + 0.0015 * sin(m * 1.26 + wander);
       if (uniform() < 0.10) v -= 0.020 + 0.050 * uniform();
       d.addSample((float)v, t);
+      if (tap) tap(tapCtx, (float)v, t);
       const CS::State s = d.state();
       seen |= 1u << s;
       if (firstAt[s] < 0) firstAt[s] = m;
@@ -358,6 +362,19 @@ void forSeeds(const char *name, F scenario, int maxBad = 0) {
 
 constexpr unsigned bit(CS::State s) { return 1u << s; }
 const unsigned kClaimsPower = bit(CS::CHARGING) | bit(CS::FULL);  // "USB is in" states
+
+// How a clock comes to FULL: a charge is seen, from 4.10 V at 3 mV a minute up to a plateau of 4.19 V that the
+// charger then holds (an hour in all; FULL comes some twelve minutes after the voltage stops).  A cell that is
+// merely flat near the top when the clock starts is not called full for some three hours: see "started on a
+// charger" and "started on its battery" below.
+bool chargeToFull(Sim &s) {
+  const double t0 = s.now();
+  s.run(60, [t0](double m) {
+    const double x = 4.10 + 0.003 * (m - t0);
+    return x > 4.19 ? 4.19 : x;
+  });
+  return s.d.state() == CS::FULL;
+}
 }  // namespace
 
 static void testCharge() {
@@ -411,8 +428,7 @@ static void testCharge() {
   auto unplugFromFull = [](const char *name, double rate, double withinMin) {
     forSeeds(name, [rate, withinMin](uint64_t seed, Verdict &v) {
       Sim s(seed);
-      s.run(25, [](double) { return 4.19; });
-      v.need(s.d.state() == S::FULL, "not full on the charger");
+      v.need(chargeToFull(s), "not full on the charger");
       const double t0 = s.now();
       s.clearSeen();
       s.run(withinMin + 5, [=](double m) { return 4.19 - rate * (m - t0); });
@@ -436,7 +452,7 @@ static void testCharge() {
     int bad = 0;
     for (uint64_t seed = 1; seed <= 200; seed++) {
       Sim s(seed + 1100);
-      s.run(25, [](double) { return 4.19; });
+      chargeToFull(s);
       const double t0 = s.now();
       auto f = [=](double m) { return 4.19 - 0.0003 * (m - t0); };
       s.run(75, f);
@@ -456,8 +472,7 @@ static void testCharge() {
     snprintf(name, sizeof name, "after the fall is seen, FULL does not come back (%.2f mV/min)", rate * 1000);
     forSeeds(name, [rate](uint64_t seed, Verdict &v) {
       Sim s(seed);
-      s.run(25, [](double) { return 4.19; });
-      v.need(s.d.state() == S::FULL && !s.d.leftFull(), "not full on the charger, or falling already");
+      v.need(chargeToFull(s) && !s.d.leftFull(), "not full on the charger, or falling already");
       const double t0 = s.now();
       auto f = [=](double m) { return 4.19 - rate * (m - t0); };
       s.run(rate > 0.0001 ? 90 : 240, f);
@@ -478,10 +493,9 @@ static void testCharge() {
     int bad = 0, notFull = 0;
     for (uint64_t seed = 1; seed <= 300; seed++) {
       Sim s(seed + 500);
-      s.run(25, [](double) { return 4.19; });
-      if (s.d.state() != S::FULL) notFull++;
+      if (!chargeToFull(s)) notFull++;
       s.clearSeen();
-      double level = 0, next = 40;
+      double level = 0, next = s.now() + 15;
       s.run(480, [&](double m) {
         if (m > next) {
           level = (s.uniform() < 0.5 ? 1 : -1) * 0.004 * s.uniform();
@@ -502,38 +516,41 @@ static void testCharge() {
     }
   }
   // A dip of a few minutes (a cable knocked loose and pushed back) takes the cell down and it comes back.  The
-  // twelve minute trend or the slow history may call it a discharge for a while; FULL has to be back within
-  // 45 minutes, and it must never be called charging.  (What brings FULL back is the last hour of the slow
-  // history: a four minute dip hardly moves it, a fall does; the dip itself stays in the last twenty minutes.)
+  // twelve minute trend or the slow history may call it a discharge for a while, and while the dips keep
+  // coming it may stay at that: a cell that was not seen charging is full only once the slow history holds no
+  // fall, and a dip in its newest 40 minutes is one.  It must never be called charging, and once the dips are
+  // over FULL has to be back within the hour.
   forSeeds("held full with a four minute dip of 13 mV every hour or so", [](uint64_t seed, Verdict &v) {
     Sim s(seed + 550);
-    s.run(90, [](double) { return 4.19; });  // (in the first 80 minutes after boot there is not yet a slow history to bring FULL back)
+    chargeToFull(s);
+    s.run(150, [](double) { return 4.19; });  // (in the first three hours after a start the slow history is too short to bring FULL back)
     v.need(s.d.state() == S::FULL, "not full on the charger");
     s.clearSeen();
-    double dipAt = 20 + 50 * s.uniform();
-    int notFullMin = 0, longest = 0;
+    double dipAt = s.now() + 20 + 50 * s.uniform();
     auto truth = [&](double m) {
       if (m > dipAt + 4) dipAt = m + 40 + 50 * s.uniform();
       return 4.19 - ((m >= dipAt && m < dipAt + 4) ? 0.013 : 0.0);
     };
-    for (int minute = 0; minute < 480; minute++) {
-      s.run(1, truth);
-      notFullMin = s.d.state() == S::FULL ? 0 : notFullMin + 1;
-      if (notFullMin > longest) longest = notFullMin;
-    }
+    s.run(480, truth);
     v.need((s.seen & bit(S::CHARGING)) == 0, "a dip was called charging");
-    v.need(longest <= 45, "FULL did not come back within 45 minutes of a dip");
-    v.need(s.d.state() == S::FULL, "not full at the end");
+    if (s.now() < dipAt + 4 && s.now() >= dipAt) s.run(4, truth);  // (let a dip that is under way end)
+    dipAt = 1e9;  // no more dips
+    s.run(60, truth);
+    v.need((s.seen & bit(S::CHARGING)) == 0, "a dip was called charging");
+    v.need(s.d.state() == S::FULL, "FULL was not back an hour after the last dip");
   });
   for (double tau : {15.0, 30.0}) {
     char name[96];
     snprintf(name, sizeof name, "held full after the charger ends, 8 mV tail (tau %.0f min)", tau);
     forSeeds(name, [tau](uint64_t seed, Verdict &v) {
       Sim s(seed + 600);
-      s.run(25, [tau](double m) { return 4.19 + 0.008 * exp(-m / tau); });
+      const double top = (4.198 - 4.10) / 0.003;  // the minute the charge reaches its end, and the cell starts to relax
+      auto f = [=](double m) { return m < top ? 4.10 + 0.003 * m : 4.19 + 0.008 * exp(-(m - top) / tau); };
+      s.run(top + 3 * tau + 25, f);  // (it is called FULL once the tail has flattened)
       v.need(s.d.state() == S::FULL, "not full on the charger");
+      v.need((s.seen & bit(S::DISCHARGING)) == 0, "the cell relaxing was called a discharge");
       s.clearSeen();
-      s.run(480, [tau](double m) { return 4.19 + 0.008 * exp(-(m + 25) / tau); });
+      s.run(480, f);
       v.need(s.changes == 0, "left FULL");
     });
   }
@@ -550,7 +567,7 @@ static void testCharge() {
     int bad = 0, setupFailed = 0;
     for (uint64_t seed = 1; seed <= 200; seed++) {
       Sim s(seed + 900);
-      s.run(25, [](double) { return 4.19; });
+      chargeToFull(s);
       const double t0 = s.now();
       s.run(150, [=](double m) { return 4.19 - 0.0003 * (m - t0); });
       if (!(s.d.state() == S::DISCHARGING && s.d.leftFull())) {
@@ -577,7 +594,7 @@ static void testCharge() {
   // it is full again, with nothing of the sag left over.
   forSeeds("plugged in again after a sag", [](uint64_t seed, Verdict &v) {
     Sim s(seed + 800);
-    s.run(25, [](double) { return 4.19; });
+    chargeToFull(s);
     const double t0 = s.now();
     s.run(150, [=](double m) { return 4.19 - 0.0003 * (m - t0); });
     v.need(s.d.state() == S::DISCHARGING && s.d.leftFull(), "no sag found before the plug-in");
@@ -617,14 +634,35 @@ static void testCharge() {
     v.need((s.seen & kClaimsPower) == 0, "called it charging or full");
   });
 
-  forSeeds("held at 4.18 V on a charger for three hours", [](uint64_t seed, Verdict &v) {
+  // A clock started on a charger that has finished.  Nothing was seen of the charge, and twelve flat minutes at
+  // the top are just what a nearly full cell under a light load looks like too, so nothing is claimed until
+  // the slow history has shown some three hours without a fall.  Then it is FULL, and stays.
+  forSeeds("started on a charger with the cell full (4.18 V)", [](uint64_t seed, Verdict &v) {
     Sim s(seed);
-    s.run(24, [](double) { return 4.18; });
-    v.need(s.d.state() == S::FULL, "not full by minute 24");
+    s.run(120, [](double) { return 4.18; });
+    v.need(s.seen == bit(S::UNKNOWN), "claimed something of a cell that is merely flat at the top");
+    s.run(105, [](double) { return 4.18; });
+    v.need(s.d.state() == S::FULL, "not full after 225 minutes without a fall");
+    v.need((s.seen & (bit(S::CHARGING) | bit(S::DISCHARGING))) == 0, "called it charging or discharging");
     s.clearSeen();
     s.run(180, [](double) { return 4.18; });
     v.need(s.seen == bit(S::FULL), "wavered while sitting flat");
   });
+
+  // Found on the board: the clock was restarted on its battery with the cell at 99 %, the radio mostly off and
+  // the processor slow.  The top of the curve then falls by some 0.05 mV a minute, which twelve minutes cannot
+  // tell from flat: it was called FULL eleven minutes after the start, and the runtime estimate (which waits
+  // for a clock that is on its own) was kept back for hours.  Sixteen hours each, down to 4.07 .. 4.16 V.
+  for (double rate : {0.00012, 0.00007, 0.00005, 0.00003}) {
+    char name[96];
+    snprintf(name, sizeof name, "started on its battery with the cell nearly full (-%.2f mV/min)", rate * 1000);
+    forSeeds(name, [rate](uint64_t seed, Verdict &v) {
+      Sim s(seed + 1300);
+      s.run(960, [rate](double m) { return 4.19 - rate * m; });
+      v.need((s.seen & bit(S::FULL)) == 0, "a cell that carries the clock was called full");
+      v.need((s.seen & bit(S::CHARGING)) == 0, "called it charging");
+    });
+  }
 
   // The board draws more while it joins WiFi and fetches over TLS in the first minutes after boot, the
   // battery sags and then recovers.  The recovery must not pass for a plug-in.
@@ -637,9 +675,12 @@ static void testCharge() {
   });
   forSeeds("boot on a charger (full) with a 100 mV start-up sag", [startupSag](uint64_t seed, Verdict &v) {
     Sim s(seed);
-    s.run(40, [startupSag](double m) { return 4.19 - startupSag(m, 100) / 1000.0; });
-    v.need((s.seen & bit(S::DISCHARGING)) == 0, "the start-up sag looked like discharging");
-    v.need(s.d.state() == S::FULL, "not full after 40 minutes");
+    auto f = [startupSag](double m) { return 4.19 - startupSag(m, 100) / 1000.0; };
+    s.run(40, f);
+    v.need(s.seen == bit(S::UNKNOWN), "the start-up sag looked like discharging, or a flat cell was called something");
+    s.run(185, f);
+    v.need(s.d.state() == S::FULL, "not full after 225 minutes");
+    v.need((s.seen & (bit(S::CHARGING) | bit(S::DISCHARGING))) == 0, "called it charging or discharging");
   });
   {  // the first three minutes are thrown away, and the Info page can say so
     Sim s(5);
@@ -737,28 +778,28 @@ static void testCharge() {
   }, 2);
   forSeeds("load rises by 8 mV while full on the charger", [](uint64_t seed, Verdict &v) {
     Sim s(seed);
-    auto f = [](double m) { return 4.19 - (m > 30 ? 0.008 : 0.0); };
-    s.run(25, f);
-    v.need(s.d.state() == S::FULL, "not full before the shift");
+    v.need(chargeToFull(s), "not full before the shift");
+    const double t0 = s.now();
     s.clearSeen();
-    s.run(60, f);
+    s.run(60, [t0](double m) { return 4.19 - (m > t0 + 5 ? 0.008 : 0.0); });
     v.need(s.seen == bit(S::FULL), "a small level shift took it out of FULL");
   });
   // A bigger drop at the top of the curve is, to a voltage reading, a battery that has started
-  // supplying the load.  It may say so for a while (once it has, FULL waits until the last hour has not
-  // fallen, which is what keeps an unplugged cell from reading as full again); it must never say charging,
-  // and it must settle once the level has sat still.
+  // supplying the load.  It may say so for a while; it must never say charging, and it must settle once the
+  // level has sat still.  That takes a few hours: once FULL has ended it waits until the last hour has not
+  // fallen, and a cell that was not seen charging is only called full when the slow history has no fall in it
+  // at all, which is what keeps a cell that carries the clock from reading as full.
   forSeeds("load rises by 15 mV while full on the charger", [](uint64_t seed, Verdict &v) {
     Sim s(seed);
-    auto f = [](double m) { return 4.19 - (m > 30 ? 0.015 : 0.0); };
-    s.run(25, f);
-    v.need(s.d.state() == S::FULL, "not full before the shift");
+    v.need(chargeToFull(s), "not full before the shift");
+    const double t0 = s.now();
+    auto f = [t0](double m) { return 4.19 - (m > t0 + 5 ? 0.015 : 0.0); };
     s.clearSeen();
     s.run(45, f);
     v.need((s.seen & bit(S::CHARGING)) == 0, "a drop was called charging");
-    s.run(90, f);
+    s.run(255, f);
     v.need((s.seen & bit(S::CHARGING)) == 0, "a drop was called charging");
-    v.need(s.d.state() == S::FULL, "did not settle back to FULL two hours on");
+    v.need(s.d.state() == S::FULL, "did not settle back to FULL five hours on");
   });
 
   {  // the battery being removed, or readings stopping, starts it afresh
@@ -779,6 +820,87 @@ static void testCharge() {
     uint32_t tw = 0xFFFFFFFFu - 5 * 60000u;
     for (int i = 0; i < 12 * 60 / 5 + 40; i++, tw += 5000) w.addSample(3.95f - 0.001f * (i * 5 / 60.0f), tw);
     CHECK(w.state() == S::DISCHARGING);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The charge detector, the gate and the runtime estimator wired together as the sketch wires them
+// (readSlowSensors()), on traces of a clock that runs on its battery under a light load.
+//
+// Found on the board: restarted with the cell at 99 %, the radio mostly off and the processor at 20 MHz, the
+// clock said "full" and gave no estimate.  The voltage then falls too slowly for the detector to call it a
+// discharge, the estimator was only fed once it had, and near the top a flat-looking cell was called full.
+// ---------------------------------------------------------------------------
+static void testEstimateUnderLightLoad() {
+  section("runtime estimate under a light load");
+  struct Rig {
+    Sim s;
+    battest::Estimator est;
+    battest::Gate gate;
+    double firstReadyMin = -1;  // the minute the estimator first had a figure
+    bool heldBack = false;      // a reading was kept from the estimator
+    explicit Rig(uint64_t seed) : s(seed) {
+      s.tap = [](void *ctx, float volts, uint32_t tMs) {
+        Rig *r = (Rig *)ctx;
+        const CS::State st = r->s.d.state();
+        if (!r->gate.feed(r->est, true, st == CS::CHARGING || st == CS::FULL, tMs / 1000, volts)) r->heldBack = true;
+        if (r->firstReadyMin < 0 && r->est.estimate(3.30f, 0).state == battest::Estimate::READY) r->firstReadyMin = tMs / 60000.0;
+      };
+      s.tapCtx = this;
+    }
+  };
+
+  // Near the top of the curve 10 mV are one percent, so 0.05 mV a minute is 0.3 % an hour (two weeks on a charge).
+  struct Case {
+    const char *name;
+    double startV, mvPerMin, pctPerHour;
+  };
+  const Case cases[] = {
+      {"started at 99 %, falling 0.05 mV/min", 4.19, 0.05, 0.30},
+      {"started at 99 %, falling 0.12 mV/min", 4.19, 0.12, 0.72},
+      {"started at 97 %, falling 0.03 mV/min", 4.17, 0.03, 0.18},
+  };
+  for (const Case &c : cases) {
+    forSeeds(c.name, [c](uint64_t seed, Verdict &v) {
+      Rig r(seed + 1400);
+      r.s.run(300, [c](double m) { return c.startV - c.mvPerMin / 1000.0 * m; });
+      v.need(!r.heldBack, "readings were kept from the estimator (something claimed a charger)");
+      v.need(r.firstReadyMin > 0 && r.firstReadyMin <= 60, "no figure within the first hour");
+      const battest::Estimate e = r.est.estimate(3.30f, 0);
+      v.need(e.state == battest::Estimate::READY && !e.unbounded, "no figure after five hours");
+      v.need(fabs(e.pctPerHour - c.pctPerHour) <= 0.25 * c.pctPerHour, "the rate is more than a quarter off after five hours");
+      v.need(e.windowMin >= 240, "the figure does not rest on the whole run");
+    });
+  }
+
+  // In the flat middle of the curve (2 mV to the percent) the same drain is 0.01 mV a minute.  Nothing the
+  // detector looks at moves; the estimator is fed all the same, and says how little it rests on.
+  forSeeds("started at 50 %, falling 0.01 mV/min", [](uint64_t seed, Verdict &v) {
+    Rig r(seed + 1500);
+    r.s.run(300, [](double m) { return 3.84 - 0.00001 * m; });
+    v.need(!r.heldBack, "readings were kept from the estimator");
+    v.need(r.firstReadyMin > 0 && r.firstReadyMin <= 60, "no figure within the first hour");
+  });
+
+  // A charger shows: the history is dropped, nothing is fed while it is there, and it starts afresh after.
+  {
+    battest::Estimator est;
+    battest::Gate gate;
+    uint32_t t = 0;
+    auto feed = [&](int minutes, bool charger, float fromV, float perMin) {
+      int fed = 0;
+      for (int i = 0; i < minutes * 12; i++, t += 5) fed += gate.feed(est, true, charger, t, fromV + perMin * (float)(i / 12.0)) ? 1 : 0;
+      return fed;
+    };
+    CHECK(!gate.onBattery());
+    CHECK(feed(90, false, 4.00f, -0.0005f) == 90 * 12 && gate.onBattery());
+    CHECK(est.estimate(3.30f, 0).state == battest::Estimate::READY && est.binCount() >= 16);
+    CHECK(feed(30, true, 4.00f, 0.002f) == 0 && !gate.onBattery());
+    CHECK(est.estimate(3.30f, 0).state == battest::Estimate::OFF && est.binCount() == 0);  // nothing of the discharge is left
+    CHECK(feed(20, false, 4.06f, -0.0005f) == 20 * 12 && gate.onBattery());
+    CHECK(est.estimate(3.30f, 0).state == battest::Estimate::LEARNING);  // ... and the new one starts from nothing
+    // no battery at all (battery = none, or none fitted): nothing is fed
+    CHECK(!gate.feed(est, false, false, t, 4.0f) && !gate.onBattery() && est.binCount() == 0);
   }
 }
 
@@ -1774,6 +1896,7 @@ int main() {
   testSensorMaths();
   testBatteryCalibration();
   testCharge();
+  testEstimateUnderLightLoad();
   testFramePlan();
   testWeather();
   testSpotify();

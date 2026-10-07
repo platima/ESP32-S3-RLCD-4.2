@@ -111,7 +111,7 @@ static int s_chargeState = CHARGE_UNKNOWN;  // UiCharge: the detector, overruled
 static uint32_t s_lastBatLogMs = 0;
 
 static battest::Estimator s_est;       // runtime left, from the discharge so far (battery_est.h)
-static int s_estState = -1;            // the charge state the estimator's history belongs to
+static battest::Gate s_estGate;        // ... fed whenever no charger shows
 static lowbat::Guard s_guard;          // switches the clock off before the cell is flat (low_battery.h)
 static bool s_guardOverride = false;   // the user held KEY on the "battery empty" screen: run anyway
 
@@ -320,15 +320,12 @@ static void readSlowSensors(uint32_t nowMs) {
     }
     s_chargeState = s_batHave ? resolveCharge() : CHARGE_UNKNOWN;
 
-    // runtime estimate: only readings taken while running on the battery, and a fresh start
-    // whenever that changes (the charger came or went)
-    if (s_chargeState != s_estState) {
-      s_est.reset();
-      s_estState = s_chargeState;
-    }
+    // runtime estimate: the readings taken while the clock runs on its battery as far as it can tell, which is
+    // whenever no charger shows (not only once the detector says "discharging": a light load never earns that
+    // word), and a fresh start whenever a charger comes or goes
     // seconds since start from the 64-bit timer: millis() / 1000 would jump back to 0 after 49.7 days
     const uint32_t nowSec = (uint32_t)(esp_timer_get_time() / 1000000);
-    if (s_batHave && s_chargeState == CHARGE_DISCHARGING) s_est.add(nowSec, b.volts);
+    s_estGate.feed(s_est, s_batHave, s_chargeState == CHARGE_CHARGING || s_chargeState == CHARGE_FULL, nowSec, b.volts);
 
     // the cut-off: a minute under it, while not charging (low_battery.h)
     if (s_batHave && s_guard.feed(nowSec, b.volts, s_chargeState != CHARGE_CHARGING && s_chargeState != CHARGE_FULL)) {
@@ -410,14 +407,17 @@ static void estimateText(char *out, size_t cap) {
   switch (s_chargeState) {
     case CHARGE_CHARGING: snprintf(out, cap, "charging"); return;
     case CHARGE_FULL: snprintf(out, cap, "full"); return;
-    case CHARGE_DISCHARGING: break;
-    default: snprintf(out, cap, "waiting to see what the battery is doing"); return;
+    default: break;  // discharging, or nothing seen of a charger: on its battery as far as the clock can tell
   }
   const battest::Estimate e = s_est.estimate(g_cfg.batteryCutoffV, (float)g_cfg.batteryCapacityMah);
   char left[24];
   switch (e.state) {
     case battest::Estimate::READY:
-      if (e.unbounded) {
+      if (e.unbounded && s_chargeState != CHARGE_DISCHARGING) {
+        // no fall to speak of, and no fall was ever seen: a charger that has finished looks like this for the
+        // first hours after a start (charge.h), and so does a clock that draws next to nothing
+        snprintf(out, cap, "no drain to measure (on a charger?)");
+      } else if (e.unbounded) {
         snprintf(out, cap, "more than a month at this rate");
       } else {
         battest::formatRemaining(e.hoursLeft, left, sizeof left);
@@ -526,7 +526,9 @@ static void buildInfoSystem(UiModel &m, const SharedState &s, uint32_t nowMs, ti
     } else if (s_chargeState == CHARGE_UNKNOWN && !s_charge.ready()) {
       snprintf(how, sizeof how, "learning %.0f of 8 min", s_charge.minutesOfData());
     } else if (s_charge.ready()) {
-      snprintf(how, sizeof how, "%s %+.1f mV/min", chargeName(s_chargeState), s_charge.slopeMvPerMin());
+      // (neither charging nor held full, and not seen to fall either, which a light load never is: on its battery, then)
+      snprintf(how, sizeof how, "%s %+.1f mV/min", s_chargeState == CHARGE_UNKNOWN ? "on battery?" : chargeName(s_chargeState),
+               s_charge.slopeMvPerMin());
     } else {
       snprintf(how, sizeof how, "%s", chargeName(s_chargeState));
     }
@@ -624,7 +626,7 @@ static void buildInfoPower(UiModel &m, const SharedState &s) {
   add("Battery", v);
   estimateText(v, sizeof v);
   add("Left", v);
-  if (s_batHave && s_chargeState == CHARGE_DISCHARGING && g_cfg.batteryCapacityMah > 0) {
+  if (s_batHave && s_estGate.onBattery() && g_cfg.batteryCapacityMah > 0) {
     const battest::Estimate e = s_est.estimate(g_cfg.batteryCutoffV, (float)g_cfg.batteryCapacityMah);
     if (e.state == battest::Estimate::READY) {
       snprintf(v, sizeof v, "about %.0f mA (of %d mAh)", (double)e.avgMa, (int)g_cfg.batteryCapacityMah);
