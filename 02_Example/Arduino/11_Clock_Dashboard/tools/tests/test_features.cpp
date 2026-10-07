@@ -18,6 +18,7 @@
 #include "fw_logic.h"
 #include "low_battery.h"
 #include "moon.h"
+#include "sd_layout.h"
 #include "settings.h"
 #include "tz_table.h"
 #include "wifi_pick.h"
@@ -2256,6 +2257,190 @@ void testFirmwareLogic() {
 // The example settings file kept in docs/ for people who want to see the format before they have
 // a card: it must be exactly what the clock writes to a card with none.  Regenerate it with
 //   ./build/test_features --write-example
+// ===========================================================================
+// What is on an SD card that would not mount (sd_layout.h)
+// ===========================================================================
+namespace sdtest {
+
+typedef std::vector<uint8_t> Sector;
+
+Sector blank() { return Sector(512, 0); }
+
+void sign(Sector &s) {
+  s[510] = 0x55;
+  s[511] = 0xAA;
+}
+
+// The boot sector of a volume as Windows writes it: the jump, the name of the formatter, 512 byte sectors.
+Sector bootSector(const char *oem) {
+  Sector s = blank();
+  s[0] = 0xEB;
+  s[1] = 0x58;
+  s[2] = 0x90;
+  memcpy(&s[3], oem, 8);
+  s[11] = 0x00;
+  s[12] = 0x02;  // 512 bytes per sector
+  sign(s);
+  return s;
+}
+
+Sector fat32() {
+  Sector s = bootSector("MSDOS5.0");
+  memcpy(&s[82], "FAT32   ", 8);
+  return s;
+}
+
+Sector fat16() {
+  Sector s = bootSector("MSDOS5.0");
+  memcpy(&s[54], "FAT16   ", 8);
+  return s;
+}
+
+Sector exfat() { return bootSector("EXFAT   "); }
+Sector ntfs() { return bootSector("NTFS    "); }
+
+// A partition table with boot code in front of it (as every real one has).
+Sector mbr() {
+  Sector s = blank();
+  s[0] = 0x33;
+  s[1] = 0xC0;
+  s[2] = 0x8E;
+  sign(s);
+  return s;
+}
+
+void entry(Sector &s, int slot, uint8_t type, uint32_t lba) {
+  uint8_t *e = &s[446 + 16 * slot];
+  e[4] = type;
+  e[8] = (uint8_t)lba;
+  e[9] = (uint8_t)(lba >> 8);
+  e[10] = (uint8_t)(lba >> 16);
+  e[11] = (uint8_t)(lba >> 24);
+  e[12] = 0x00;
+  e[13] = 0x00;
+  e[14] = 0x10;  // some size
+}
+
+}  // namespace sdtest
+
+void testSdLayout() {
+  section("SD card: what is on a card that will not mount");
+  using namespace sdlayout;
+  using namespace sdtest;
+
+  // nothing on it
+  CHECK(inspectFirst(blank().data()).kind == Kind::BLANK && !inspectFirst(blank().data()).lookAtPartition);
+  {
+    Sector noise(512, 0xA5);  // no boot signature
+    CHECK(inspectFirst(noise.data()).kind == Kind::BLANK);
+    Sector emptyTable = mbr();  // a signature and a table with nothing in it (a wiped card)
+    CHECK(inspectFirst(emptyTable.data()).kind == Kind::BLANK);
+  }
+
+  // a volume that fills the card, with no partition table
+  CHECK(inspectFirst(fat32().data()).kind == Kind::FAT && !inspectFirst(fat32().data()).lookAtPartition);
+  CHECK(inspectFirst(fat16().data()).kind == Kind::FAT);
+  CHECK(inspectFirst(exfat().data()).kind == Kind::EXFAT);
+  CHECK(inspectFirst(ntfs().data()).kind == Kind::NTFS);
+
+  // the usual card: one FAT32 partition in a classic table.  The answer is in the partition's own first sector.
+  {
+    Sector t = mbr();
+    entry(t, 0, 0x0C, 8192);
+    const First f = inspectFirst(t.data());
+    CHECK(f.kind == Kind::UNKNOWN && f.lookAtPartition && f.partitionLba == 8192 && f.partitionType == 0x0C);
+    CHECK(inspectPartition(fat32().data(), f.partitionType) == Kind::FAT);
+    CHECK(inspectPartition(blank().data(), f.partitionType) == Kind::FAT);  // called FAT by the table, its start wiped: still "FAT, will not mount"
+  }
+  // a big card as it comes from the shop: one exFAT partition, type 0x07 (NTFS has the same type)
+  {
+    Sector t = mbr();
+    entry(t, 0, 0x07, 32768);
+    const First f = inspectFirst(t.data());
+    CHECK(f.lookAtPartition && f.partitionLba == 32768 && f.partitionType == 0x07);
+    CHECK(inspectPartition(exfat().data(), 0x07) == Kind::EXFAT);
+    CHECK(inspectPartition(ntfs().data(), 0x07) == Kind::NTFS);
+    CHECK(inspectPartition(blank().data(), 0x07) == Kind::OTHER);
+    CHECK(inspectPartition(fat32().data(), 0x07) == Kind::FAT);  // what is there counts, not what the table calls it
+  }
+  // a GUID partition table: its first sector is a table with one entry of type 0xEE.  Windows shows the FAT32
+  // volume inside as "FAT32" all the same, and the clock's FAT library cannot find it.
+  {
+    Sector t = mbr();
+    entry(t, 0, 0xEE, 1);
+    const First f = inspectFirst(t.data());
+    CHECK(f.kind == Kind::GPT && !f.lookAtPartition && f.partitionType == 0xEE);
+  }
+  // the first entries empty: the first one that is used counts; a Linux partition is "other"
+  {
+    Sector t = mbr();
+    entry(t, 2, 0x0B, 2048);
+    const First f = inspectFirst(t.data());
+    CHECK(f.lookAtPartition && f.partitionLba == 2048 && f.partitionType == 0x0B);
+    Sector far = mbr();  // a partition that starts far into a big card: all four bytes of the sector number count
+    entry(far, 3, 0x0C, 0x81020304u);
+    CHECK(inspectFirst(far.data()).lookAtPartition && inspectFirst(far.data()).partitionLba == 0x81020304u);
+    Sector lin = mbr();
+    entry(lin, 0, 0x83, 2048);
+    const First g = inspectFirst(lin.data());
+    CHECK(g.lookAtPartition && inspectPartition(blank().data(), g.partitionType) == Kind::OTHER);
+  }
+  // an entry with a type and no start, or a start and no type, is not an entry
+  {
+    Sector t = mbr();
+    entry(t, 0, 0x0C, 0);
+    entry(t, 1, 0x00, 4096);
+    CHECK(inspectFirst(t.data()).kind == Kind::BLANK);
+  }
+  // a FAT boot sector needs its signature, its jump, 512 byte sectors and its name: each one missing is no FAT
+  {
+    Sector s = fat32();
+    s[510] = 0;
+    CHECK(!isFat(s.data()) && inspectFirst(s.data()).kind == Kind::BLANK);
+    s = fat32();
+    s[0] = 0x00;
+    CHECK(!isFat(s.data()));
+    s = fat32();
+    s[12] = 0x10;  // 4096 byte sectors
+    CHECK(!isFat(s.data()));
+    s = fat32();
+    memcpy(&s[82], "FAT64   ", 8);
+    CHECK(!isFat(s.data()));
+    for (uint8_t jump : {(uint8_t)0xEB, (uint8_t)0xE9, (uint8_t)0xE8}) {
+      s = fat32();
+      s[0] = jump;
+      CHECK(isFat(s.data()));
+    }
+    Sector twelve = bootSector("MSDOS5.0");
+    memcpy(&twelve[54], "FAT12   ", 8);
+    CHECK(isFat(twelve.data()));
+    Sector e = exfat();
+    e[511] = 0;  // exFAT and NTFS need the signature too
+    CHECK(!isExfat(e.data()) && inspectFirst(e.data()).kind == Kind::BLANK);
+  }
+  // the types a table uses for FAT
+  for (int t = 0; t < 256; t++) {
+    const bool want = t == 0x01 || t == 0x04 || t == 0x06 || t == 0x0B || t == 0x0C || t == 0x0E;
+    CHECK(isFatPartitionType((uint8_t)t) == want);
+  }
+
+  // every answer has its own line for the screen, short enough for a banner (39 characters), and says "SD card"
+  std::vector<std::string> seen;
+  for (Kind k : kAllKinds) {
+    const std::string line = text(k);
+    CHECK(line.size() >= 20 && line.size() <= 39);
+    CHECK(line.compare(0, 7, "SD card") == 0);
+    for (const std::string &other : seen) CHECK(other != line);
+    seen.push_back(line);
+    CHECK(strlen(name(k)) > 0);
+  }
+  CHECK(sizeof kAllKinds / sizeof kAllKinds[0] == 8);
+  CHECK(strstr(text(Kind::GPT), "GPT") && strstr(text(Kind::GPT), "MBR"));
+  CHECK(strstr(text(Kind::EXFAT), "exFAT") && strstr(text(Kind::EXFAT), "FAT32"));
+  CHECK(strstr(text(Kind::NTFS), "NTFS") && strstr(text(Kind::BLANK), "not formatted"));
+  CHECK(strstr(text(Kind::READ_ERROR), "cannot read") && strstr(text(Kind::FAT), "will not mount"));
+}
+
 void testRepoExampleFile(bool write) {
   section("example settings file in docs/");
   static char buf[16384];
@@ -2321,6 +2506,7 @@ int main(int argc, char **argv) {
   testWifiPick();
   testWifiPickDay();
   testFirmwareLogic();
+  testSdLayout();
   testSettingsFuzz();
 
   printf("\n%d checks, %d failed\n", g_checks, g_failed);

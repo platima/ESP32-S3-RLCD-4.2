@@ -71,7 +71,10 @@ settings file from an SD card. Later wins:
 ### Settings from an SD card
 
 1. **Format a card as FAT32** (the usual format of cards up to 32 GB; larger cards come as exFAT, which the clock cannot
-   read, it says *SD card is not FAT32* on screen if you try). Any small card will do.
+   read). The card also needs the classic kind of **partition table (MBR)**, which is what cards are sold with: a
+   FAT32 volume on a card with a GUID partition table (GPT) shows as FAT32 in Windows and still cannot be read. The
+   clock looks at a card it cannot use and says which it is (*SD card is exFAT: format it as FAT32*, *SD card: GPT
+   partitions, needs MBR*); see [Troubleshooting](#troubleshooting) for how to put it right. Any small card will do.
 2. Put the card in the slot and **restart** the clock: **hold KEY for five seconds and let go**, or turn it off and on
    again (the card is only looked at while it starts). When it finds a card without a settings file it **writes one**, `ESP32-S3-RLCD-Config.txt`, which explains every
    setting and has them all commented out, showing the value in use. A banner says *Wrote settings file to SD card*.
@@ -751,7 +754,11 @@ down, no statement about its state after power-on was found, which is why both a
 | Weather missing, *Weather update failed* | Check the serial log; the clock retries every minute. A reply that lacks a field the clock shows as a fact (the temperature, humidity, wind, condition, day or night, or a day's conditions and temperatures) is refused rather than shown with a made-up default; the rain chance, sunrise, sunset and UV may be missing and then show 0 %, `--:--` and 0 |
 | *Set a location (SD card or secrets.h)* | No `latitude` / `longitude` or `location` anywhere. The clock still tells the time, and the status bar says *Earth* |
 | Wrong time zone | Check the coordinates, or set `timezone` |
-| *SD card is not FAT32* | The card is exFAT (cards over 32 GB usually are) or not formatted; format it as FAT32 |
+| *SD card is exFAT: format it as FAT32* (or *is NTFS*, or *is not formatted*) | Format it as FAT32. Cards over 32 GB come as exFAT and Windows may not offer FAT32 for them: use a card of 32 GB or less |
+| *SD card: GPT partitions, needs MBR* | Windows shows the volume as FAT32, but the card's partition table is a GUID one (GPT), which the clock's FAT library cannot read, and formatting does not change the table. In Windows *Disk Management*: delete the volume on the card, right-click the disk's label at the left and choose *Convert to MBR Disk*, then make a *New Simple Volume* formatted FAT32. (Everything on the card is lost. Mind which disk you pick.) The SD Association's *SD Memory Card Formatter* also puts a card of up to 32 GB back the way it was sold |
+| *SD card: no FAT32 partition on it* / *no FAT32 found on it* | The card is partitioned for something else (Linux, a camera's own format). Re-make it as above |
+| *SD card: FAT found, will not mount* | There is a FAT volume and the library refuses it: a damaged file system (let Windows check the card), or an odd format; formatting it afresh with the default allocation unit size settles it |
+| *SD card: cannot read it* | The card answered and then gave no data: seat it again, try another card |
 | *SD card: cannot write* | The card's write-protect switch is on, or it is damaged; the clock never formats a card |
 | *SD settings: ... problems* | The *Power and settings* page lists the first three, with their line numbers |
 | *N built-in defaults not used* | A value in `secrets.h` fails the settings' own checks (a misspelt choice, a number outside its limits). It is left out and the factory value used; the *Power and settings* page and the serial log name the macro and say what it wants, see [Building the settings in](#building-the-settings-in) |
@@ -789,8 +796,10 @@ minutes wake it), `reboot`.
 
 Written and tested on a PC (and compiled), never run on the real board:
 
-* reading and writing the SD card (the mount follows the repo's `06_SD_Card` example; whether the card slot needs the
-  internal pull-ups, and how long the clock takes to notice that no card is there, is unknown);
+* reading and writing the SD card (the mount follows the repo's `06_SD_Card` example). On the board a card has been
+  recognised and turned away (it had a GUID partition table), so the slot and its wiring work; a file system being
+  mounted, a file read or written, and the look at a refused card's first sector that names the reason have not been
+  seen there yet. How long the clock takes to notice that no card is in the slot is unknown;
 * the deep-sleep shutdown: the pins held through the sleep, the wake-up by timer and by KEY, the 3 second
   override, and what the sleeping board draws (`sleeptest` in the serial console tries it without a flat battery);
 * a `cpu_mhz` change from the SD card file while the display is already running (the display driver has to let go of the
@@ -833,6 +842,7 @@ Written and tested on a PC (and compiled), never run on the real board:
 | `settings.h`, `settings.cpp` | The settings: table, the tolerant file parser, the example file writer (pure logic, host-tested) |
 | `build_defaults.h` | The defaults of `config.h` / `secrets.h` as a `Settings`, through the same rules as the card (pure logic, host-tested: no setting can lack a build-time default) |
 | `app_settings.*`, `sdcard.*` | Settings in flash (`cfg` namespace) and on the SD card |
+| `sd_layout.h` | What is on a card that will not mount (exFAT, a GUID partition table, nothing), read from its first sector (pure logic, host-tested) |
 | `net_task.cpp` | Core 0 task: WiFi, NTP, location, weather, time zone, drift measurement |
 | `spotify.cpp`, `spotify_parse.cpp` | Spotify: link page (OAuth with PKCE), tokens, polling, commands |
 | `link_page.*`, `spotify_helper_script.h` | The Spotify setup page, and the helper script it serves (generated from `tools/spotify_link.py`) |

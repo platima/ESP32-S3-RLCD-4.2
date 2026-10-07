@@ -110,7 +110,7 @@ void cfgImportSdCard() {
   }
   if (mount == SdStatus::UNREADABLE) {
     st.sd = CfgStatus::SD_UNREADABLE;
-    LOGF(TAG, "SD card found, but it is not FAT32 (exFAT or unformatted?)");
+    LOGF(TAG, "an SD card answered, but no FAT file system on it could be mounted: %s", sdProblemText());
     return;
   }
   sdCardSummary(st.card, sizeof st.card);
@@ -175,7 +175,7 @@ void cfgSummary(char *out, size_t cap) {
         snprintf(out, cap, "built-in defaults, no SD card");
       }
       break;
-    case CfgStatus::SD_UNREADABLE: snprintf(out, cap, "SD card is not FAT32 (exFAT?)"); break;
+    case CfgStatus::SD_UNREADABLE: snprintf(out, cap, "%s", sdProblemText()); break;  // what the card holds instead
     case CfgStatus::SD_EXAMPLE_WRITTEN: snprintf(out, cap, "wrote an example file to the card"); break;
     case CfgStatus::SD_WRITE_FAILED: snprintf(out, cap, "SD card: cannot write (locked?)"); break;
     case CfgStatus::SD_READ_FAILED: snprintf(out, cap, "SD card: cannot read the file"); break;

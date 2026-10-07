@@ -18,7 +18,7 @@ struct CfgStatus {
   enum Sd : uint8_t {
     SD_NOT_TRIED = 0,
     SD_NO_CARD,
-    SD_UNREADABLE,       // a card, but its file system would not mount (exFAT?)
+    SD_UNREADABLE,       // a card, but no file system on it would mount (exFAT, a GPT partition table, ...: sdProblemText())
     SD_EXAMPLE_WRITTEN,  // a card with no settings file: an example was written to it
     SD_WRITE_FAILED,     // ... or could not be (write-protected card?)
     SD_READ_FAILED,      // the file is there but could not be read (too big, card error)

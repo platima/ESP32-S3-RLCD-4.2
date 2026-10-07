@@ -10,6 +10,7 @@
 #include "../../ui.cpp"
 
 #include "../../calc.h"
+#include "../../sd_layout.h"
 
 #include <stdlib.h>
 #include <sys/stat.h>
@@ -1057,10 +1058,10 @@ static int checkButtonHelp() {
   }
 
   // The banner: a black band with white text, centred.  The columns its text takes up:
-  auto bannerText = [&](const char *text, int *left, int *rightEnd) {
+  auto bannerText = [&](const char *text, int icon, int *left, int *rightEnd) {
     UiModel t = baseModel();
     setStr(t.toast, sizeof t.toast, text);
-    t.toastIcon = TOAST_NONE;
+    t.toastIcon = icon;
     renderModel(t);
     *left = *rightEnd = -1;
     for (int x = 0; x < UI_WIDTH; x++) {
@@ -1074,20 +1075,34 @@ static int checkButtonHelp() {
   };
   const int kMargin = 12;
   int l = -1, r = -1;
-  bannerText(UI_TOAST_RESTART_HOLD, &l, &r);
+  bannerText(UI_TOAST_RESTART_HOLD, TOAST_NONE, &l, &r);
   printf("restart banner: \"%s\" takes x=%d..%d, margins %d and %d (%d wanted)\n", UI_TOAST_RESTART_HOLD, l, r, l, UI_WIDTH - 1 - r, kMargin);
   if (l < kMargin || r > UI_WIDTH - 1 - kMargin || strlen(UI_TOAST_RESTART_HOLD) >= sizeof m.toast) {
     printf("  BANNER: the restart text does not fit\n");
     bad++;
   }
-  bannerText(UI_TOAST_RESTARTING, &l, &r);
+  bannerText(UI_TOAST_RESTARTING, TOAST_NONE, &l, &r);
   if (l < kMargin || r > UI_WIDTH - 1 - kMargin) {
     printf("  BANNER: \"%s\" does not fit\n", UI_TOAST_RESTARTING);
     bad++;
   }
+  // what the clock says about an SD card that will not mount (sd_layout.h), each with the warning mark it is shown with
+  int widest = 0, sdBad = 0, sdTexts = 0;
+  for (sdlayout::Kind k : sdlayout::kAllKinds) {
+    const char *text = sdlayout::text(k);
+    bannerText(text, TOAST_WARN, &l, &r);
+    sdTexts++;
+    if (r - l + 1 > widest) widest = r - l + 1;
+    if (l < kMargin || r > UI_WIDTH - 1 - kMargin || strlen(text) >= sizeof m.toast) {
+      printf("  BANNER: \"%s\" does not fit (x=%d..%d)\n", text, l, r);
+      sdBad++;
+    }
+  }
+  printf("SD card banners: %d texts, the widest takes %d px of %d, %d do not fit\n", sdTexts, widest, UI_WIDTH - 2 * kMargin, sdBad);
+  bad += sdBad;
   {  // negative control: the longest text a banner can be given does not fit, and the same measurement says so
     const std::string longest(sizeof m.toast - 1, 'W');
-    bannerText(longest.c_str(), &l, &r);
+    bannerText(longest.c_str(), TOAST_NONE, &l, &r);
     if (l >= kMargin && r <= UI_WIDTH - 1 - kMargin) {
       printf("  CHECK IS BLIND: %d wide letters measured as fitting (x=%d..%d)\n", (int)longest.size(), l, r);
       bad++;

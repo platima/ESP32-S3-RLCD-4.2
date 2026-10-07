@@ -42,6 +42,7 @@
 #include "moon.h"
 #include "net_task.h"
 #include "power.h"
+#include "sdcard.h"
 #include "sensors.h"
 #include "spotify.h"
 #include "timeutil.h"
@@ -1210,7 +1211,7 @@ static void announceConfig() {
     case CfgStatus::SD_EXAMPLE_WRITTEN: showToast("Wrote settings file to SD card", TOAST_NONE, 6000); break;
     case CfgStatus::SD_WRITE_FAILED: showToast("SD card: cannot write", TOAST_WARN, 6000); break;
     case CfgStatus::SD_READ_FAILED: showToast("SD card: cannot read file", TOAST_WARN, 6000); break;
-    case CfgStatus::SD_UNREADABLE: showToast("SD card is not FAT32", TOAST_WARN, 6000); break;
+    case CfgStatus::SD_UNREADABLE: showToast(sdProblemText(), TOAST_WARN, 10000); break;  // what the card holds instead of FAT
     default:  // no card: still say so when something in config.h / secrets.h was refused (the Info page has the details)
       if (cfgBuildProblems() > 0) {
         snprintf(toast, sizeof toast, "%d built-in default%s not used", cfgBuildProblems(), cfgBuildProblems() == 1 ? "" : "s");

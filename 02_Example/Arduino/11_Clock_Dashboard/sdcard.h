@@ -10,13 +10,18 @@
 
 enum class SdStatus : uint8_t {
   NO_CARD,     // nothing answered (this also covers a card that is not seated)
-  UNREADABLE,  // a card answered but its file system would not mount: exFAT or unformatted
+  UNREADABLE,  // a card answered but its file system would not mount: sdProblemText() says what is on it
   READY        // mounted
 };
 
 // Mounts the card.  With no card in the slot this takes up to about a second.
 SdStatus sdMount();
 void sdUnmount();
+
+// After sdMount() gave UNREADABLE: one line for the screen about what the card holds instead of a FAT file
+// system the clock can read ("SD card is exFAT: format it as FAT32", "SD card: GPT partitions, needs MBR", ...).
+// The clock reads the card's first sector to find out (sd_layout.h).
+const char *sdProblemText();
 
 // "SDHC 14.8 GB" for the Info page (after a successful sdMount()).
 void sdCardSummary(char *out, size_t cap);
