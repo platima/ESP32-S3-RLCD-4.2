@@ -1,7 +1,7 @@
 # 11_Clock_Dashboard
 
 A desk clock for the Waveshare ESP32-S3-RLCD-4.2: it joins your WiFi, sets the time over NTP, works out the
-time zone (including daylight saving) by itself, and shows everything on the reflective LCD. Version **1.4**
+time zone (including daylight saving) by itself, and shows everything on the reflective LCD. Version **1.5**
 ([what changed](#versions)).
 
 <img src="docs/dashboard.png" alt="Dashboard" width="560">
@@ -22,13 +22,13 @@ time zone (including daylight saving) by itself, and shows everything on the ref
 
 > **Status.** The first version of this sketch (clock, weather, indoor sensor, battery gauge, display) has run on the
 > real board, and so have the 80 MHz setting and the frame timing described under [Power](#power) (measured by the
-> board's owner). Nearly everything added in 1.3 and 1.4, **the SD card settings, the shutdown and the runtime
-> estimate, the clock drift measurement, the moon, the new screens, the firmware update from the card, the backup
-> network, everything under [Saving power](#saving-power)**, as well as the Spotify linking flow, the charging indicator
-> and the frame scheduler from earlier, has so far only been checked on a PC (renderer, fuzz test, simulations, tens of
+> board's owner). Of what came with 1.3 and after, the owner has since seen three things work there: **a settings
+> file read from an SD card, a firmware installed from the card, and the processor slowed to 20 MHz** between syncs.
+> The rest, **the shutdown, how good the runtime estimate is, the clock drift measurement, the moon, the backup
+> network, most of [Saving power](#saving-power)**, as well as the Spotify linking flow, the charging indicator and the
+> frame scheduler from earlier, has so far only been checked on a PC (renderer, fuzz test, simulations, tens of
 > thousands of host-side checks) and compiled for the board. [Not yet tried on the board](#not-yet-tried-on-the-board)
-> lists what that means and the little that has been seen there, and [Troubleshooting](#troubleshooting) says what to
-> look at if a first guess is off.
+> goes through it item by item, and [Troubleshooting](#troubleshooting) says what to look at if a first guess is off.
 
 ## Quick start
 
@@ -87,7 +87,8 @@ settings file from an SD card. Later wins:
 4. Put the card back and restart. A banner says what happened (*SD settings: 4 changed*), the *Power and settings* page
    lists it and names any line it did not understand. **The settings are now kept in the clock's flash** and the card
    can be taken out. (It is only read at start-up, never while the clock runs, and a card that stays in costs a little
-   power.)
+   power.) With the card left in, every later start reads the file again and says *SD settings: 4 in force, none
+   new*: nothing was changed because all of it applies already.
 
 The file is forgiving about how it is typed:
 
@@ -202,7 +203,9 @@ firmware file to the SD card, put the card in and restart the clock.
    these files on the card the clock does nothing and says so.
 3. Put the card in and restart the clock (hold KEY for five seconds and let go). At start-up it checks the file, shows a progress screen, writes the firmware and
    restarts into it; about 15 to 30 seconds (an estimate, not measured). Afterwards the file is renamed `….done`, so it is
-   not installed again. A settings file on the same card is applied first.
+   not installed again. A settings file on the same card is applied first, and kept; the banner about it (*SD settings:
+   4 changed*) comes after the restart, from the new firmware. (If the firmware that does the installing is 1.4 or
+   older, that banner says *SD settings: 4 in force* instead: the settings were applied all the same.)
 
 How it stays safe:
 
@@ -587,8 +590,9 @@ Things that were considered and **not** done, so nobody wonders:
 
 Four settings go further than `wifi_power_save`: **`wifi_mode = sync`** keeps the radio off between syncs,
 **`spotify_live = off`** lets it sleep while music plays as well, **`cpu_idle_mhz`** slows the processor while the radio is
-off, and **`console = auto`** (or `off`) shuts the USB serial console down. All four are **off by default**, and **none has
-been tried on the board yet**: what follows is what the code does and what a PC simulation of its rules says, not a
+off, and **`console = auto`** (or `off`) shuts the USB serial console down. All four are **off by default**, and they
+have **only just been switched on on a real board** (7 October 2026: the processor was seen to drop to 20 MHz; nothing
+has been measured yet): what follows is what the code does and what a PC simulation of its rules says, not a
 measurement. If you have a USB power meter, the figures this section lacks are exactly the ones worth sending back.
 [What is switched off](#what-is-switched-off) lists every part of the board and what the clock does about it.
 
@@ -702,7 +706,8 @@ Things that are not known until someone tries it: the display's SPI clock and th
 in mind (the Arduino core's own `getApbFrequency()` is known to say 80 MHz at lower clocks on the ESP32-S3,
 [arduino-esp32 #7086](https://github.com/espressif/arduino-esp32/issues/7086)), so check that the screen looks right at the
 idle clock and that the *Battery* voltage on the *Power and settings* page does not change by more than a few millivolts
-when you press a button (which brings the clock up).
+when you press a button (which brings the clock up). (The first report from a board: at 20 MHz the pages are drawn and
+can be read. The voltage and the frame timing have not been reported yet.)
 
 ### The console
 
@@ -773,6 +778,8 @@ down, no statement about its state after power-on was found, which is why both a
 | *SD card: cannot read it* | The card answered and then gave no data: seat it again, try another card |
 | *SD card: cannot write* | The card's write-protect switch is on, or it is damaged; the clock never formats a card |
 | *SD settings: ... problems* | The *Power and settings* page lists the first three, with their line numbers |
+| *SD settings: 4 in force, none new* (or *nothing new* from 1.4 and older), and you had just added them | They apply: the file was read and each of its settings already had that value, kept in the clock's flash from an earlier start. With a firmware file on the same card that earlier start is the one that installed it: it applies the settings first, then installs the firmware and restarts before its banner. From 1.5 on the banner after an update says what the settings file changed (*4 changed*). The *Power and settings* page shows the settings at work in any case |
+| *SD settings: the file sets nothing* | Every line of the file is a comment, as in the file the clock writes: remove the `#` in front of a setting. If you did, the clock is reading another file: it takes `ESP32-S3-RLCD-Config.txt` before `ESP32-S31-RLCD-Config.txt` |
 | *N built-in defaults not used* | A value in `secrets.h` fails the settings' own checks (a misspelt choice, a number outside its limits). It is left out and the factory value used; the *Power and settings* page and the serial log name the macro and say what it wants, see [Building the settings in](#building-the-settings-in) |
 | A setting in `secrets.h` has no effect | The clock's flash holds a value for it from an earlier SD card, and that wins over the build. `reset_all = yes` on a card forgets them, or `name =` with nothing after the `=` forgets one |
 | *N changed, NOT saved to flash* | The settings from the card are in force for this run, but the clock's flash would not take all of them (full or failing), so they are gone at the next restart. Leave the card in, or type `config` in the serial console to see what is in force |
@@ -806,12 +813,15 @@ minutes wake it), `reboot`.
 
 ## Not yet tried on the board
 
-Written and tested on a PC (and compiled), never run on the real board:
+Written and tested on a PC (and compiled), never run on the real board, with what the board's owner has seen there
+since (7 October 2026) noted item by item:
 
 * writing to the SD card (the example settings file, the rename of an installed firmware file), and the look at a
   refused card's first sector that names the reason. Seen on the board: a card with a GUID partition table was turned
   away, and a FAT32 card was mounted and a 1.5 MB firmware file found on it and read from end to end, so the slot, its
-  wiring and reading work. How long the clock takes to notice that no card is in the slot is unknown;
+  wiring and reading work; **a settings file was read, and its four settings were applied and kept in flash** (they were
+  in force, and found unchanged in the file, at the next start). How long the clock takes to notice that no card is in
+  the slot is unknown;
 * the deep-sleep shutdown: the pins held through the sleep, the wake-up by timer and by KEY, the 3 second
   override, and what the sleeping board draws (`sleeptest` in the serial console tries it without a flat battery);
 * a `cpu_mhz` change from the SD card file while the display is already running (the display driver has to let go of the
@@ -820,23 +830,28 @@ Written and tested on a PC (and compiled), never run on the real board:
 * the clock drift measurement over real NTP syncs;
 * the backup network on the real radio: the switch when the main network cannot be joined, and the scan while connected
   that finds the main network again (the choice of network is tested on a PC, the WiFi calls are not);
-* the firmware update from the SD card past the check of the file: writing the other app slot, the switch and the
-  restart, the trial minute and the rollback. The first try on the board found the file, read it, and then failed on a
-  mistake in the updater itself (it checked the file from the wrong place and ran out of it at the end). That is fixed,
-  and the two passes over the file now run on a PC against a made-up file and flash, the mistake included; what to do
-  with a file is tested against the header of a real exported build. The flash writing and the bootloader are not. **A
-  clock that runs a build from before that fix (version 1.3) cannot be updated from the card: it needs one upload over
-  USB;**
+* of the firmware update from the SD card: the trial minute (its countdown, the confirmation), the rename of the
+  installed file, and the rollback. **Seen on the board: a build was installed from the card and the clock restarted
+  into it** (1.4, on the second try). The first try found the file, read it, and then failed on a mistake in the updater
+  itself (it checked the file from the wrong place and ran out of it at the end); the two passes over the file now run
+  on a PC against a made-up file and flash, the mistake included, and what to do with a file is tested against the
+  header of a real exported build. **A clock that runs a build from before that fix (version 1.3) cannot be updated
+  from the card: it needs one upload over USB;**
+* the count of changed settings that is kept in flash across the restart of a firmware update, so that the banner after
+  it can say what the card's settings file did (new in 1.5): the texts are tested on a PC and measured on the rendered
+  screen, the keeping is not;
 * the build id on the *System info* page: that it is the start of the hash stored in the firmware file was checked on
   an exported build, the call that reads it on the clock has not been seen to answer;
 * the new screens on the real panel (the renders are exact, the panel is not: its contrast and refresh are not modelled);
 * a built-in default that is refused (a typo in `secrets.h`) on the screen: the banner at start-up and the rows on the
   *Power and settings* page. Which values are refused and what the message says is tested on a PC; showing it uses the
   same rows as the problems of an SD card file, which have not been seen on the panel either;
-* `wifi_mode = sync` and `cpu_idle_mhz` (see [Saving power](#saving-power)): the whole of it. The scheduling is tested
-  against a simulated day and the clock policy against simulated frames; the radio being stopped and started again, the CPU
-  clock changing below 80 MHz (what the display's SPI, the battery ADC and the I2C bus do), the USB check, the Spotify strip
-  and the Now Playing page waking the radio, and the current actually saved are not;
+* `wifi_mode = sync` and `cpu_idle_mhz` (see [Saving power](#saving-power)): nearly all of it. The scheduling is tested
+  against a simulated day and the clock policy against simulated frames. **Seen on the board: with `cpu_idle_mhz = 20`
+  and `wifi_mode = sync` the processor drops to 20 MHz, and the *Power and settings* page that says so is drawn at that
+  clock.** Not yet: the radio being stopped and started again over hours, whether frames come late around a clock
+  change, what the battery ADC and the I2C bus do at 20 MHz, the USB check, the Spotify strip and the Now Playing page
+  waking the radio, and the current actually saved;
 * "the network is not there" in sync mode: the rule is tested on a PC, but it rests on what the WiFi stack reports when
   it finds no network of that name (the reason code, how soon, how often), and that has not been watched on the radio. If
   the reports come differently the clock falls back to what it did before: 25 or 45 seconds, then the 1 to 15 minute waits;
@@ -916,7 +931,7 @@ build the sketch.
   (refused and reported) and values on the limits; it also checks that each macro is documented here and in
   `secrets.example.h`, and that the version in `config.h` is the one this README gives. While they were written, the tests were checked by breaking the code in 50 ways and watching
   them fail (and the build defaults in 70 more, the power logic in 80, the button and settings code that came with it
-  in 23). Set
+  in 23, the banner about a card's settings in 17). Set
   `ARDUINOJSON_SRC` to ArduinoJson's `src` folder if it is not in `~/Arduino/libraries`.
 * **`tools/tests/battery_sim.cpp`** simulates whole battery discharges to choose the constants of `battery_est.h` (see
   the file header: `g++ -std=c++17 -O2 -I../.. battery_sim.cpp`).
@@ -934,6 +949,15 @@ build the sketch.
 `APP_VERSION` in `config.h`. It is not semver: the number goes up by hand with each batch of changes that is handed
 over to run on a board. The *System info* page shows it together with a build id, which tells two builds of one version
 apart (*Which build is running?* under [Updating the firmware from the SD card](#updating-the-firmware-from-the-sd-card)).
+
+**1.5** (7 October 2026)
+
+* **The banner about the card's settings file tells the truth after a firmware update.** With settings and a firmware
+  on one card, the start that installs the firmware applies the settings first and restarts before its banner; the
+  next start reads the same file, finds nothing left to change, and in 1.4 said *SD settings: nothing new* of settings
+  that had just been added (found on the board). The number of settings changed is now kept across that restart and
+  the banner says *SD settings: 4 changed*. A file whose settings all apply already says *4 in force, none new*, and
+  a file that is all comments *the file sets nothing*.
 
 **1.4** (7 October 2026)
 

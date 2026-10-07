@@ -1193,22 +1193,17 @@ static void serviceClock(uint32_t nowMs, int32_t usec) {
 // (a toast holds 39 characters).
 static void announceConfig() {
   char toast[40];
+  // What a card's settings changed at the start before this one, if that start could not say so: it installed
+  // a firmware from the card and restarted, and this start finds the same file with nothing left to change.
+  const int carried = g_cfgStatus.carried;
   switch (g_cfgStatus.sd) {
     case CfgStatus::SD_FILE_APPLIED: {
       const ConfigReport &r = g_cfgStatus.report;
-      if (r.touched() > 0 && !g_cfgStatus.savedToFlash) {  // in force now, gone after the next restart
-        snprintf(toast, sizeof toast, "%d changed, NOT saved to flash", r.touched());
-        showToast(toast, TOAST_WARN, 8000);
-        break;
-      }
-      if (r.problems() > 0) {
-        snprintf(toast, sizeof toast, "SD: %d changed, %d problem%s", r.touched(), r.problems(), r.problems() == 1 ? "" : "s");
-      } else if (r.touched() > 0) {
-        snprintf(toast, sizeof toast, "SD settings: %d changed", r.touched());
-      } else {
-        snprintf(toast, sizeof toast, "SD settings: nothing new");
-      }
-      showToast(toast, r.problems() ? TOAST_WARN : TOAST_NONE, 6000);
+      uint32_t trialLeft;
+      const bool justInstalled = fwOnTrial(millis(), &trialLeft);
+      const bool warn = formatSdBanner(r, g_cfgStatus.savedToFlash, carried, justInstalled, toast, sizeof toast);
+      const bool lost = r.touched() > 0 && !g_cfgStatus.savedToFlash;  // in force now, gone after the next restart
+      showToast(toast, warn ? TOAST_WARN : TOAST_NONE, lost ? 8000 : 6000);
       break;
     }
     case CfgStatus::SD_EXAMPLE_WRITTEN: showToast("Wrote settings file to SD card", TOAST_NONE, 6000); break;
@@ -1219,9 +1214,13 @@ static void announceConfig() {
       if (cfgBuildProblems() > 0) {
         snprintf(toast, sizeof toast, "%d built-in default%s not used", cfgBuildProblems(), cfgBuildProblems() == 1 ? "" : "s");
         showToast(toast, TOAST_WARN, 8000);
+      } else if (carried > 0) {  // the card came out during the restart: what it changed is still worth a line
+        formatSdBanner(ConfigReport(), true, carried, false, toast, sizeof toast);
+        showToast(toast, TOAST_NONE, 6000);
       }
       break;
   }
+  cfgAnnounced();  // the count from the last start is for this banner only, whatever it said
 }
 
 // ---------------------------------------------------------------------------

@@ -13,6 +13,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 enum UnitSystem : uint8_t { UNITS_METRIC = 0, UNITS_IMPERIAL };
@@ -155,6 +156,39 @@ ApplyResult applySetting(Settings &s, const Settings &defaults, const char *key,
 
 // One line like "7 changed, 1 unchanged, 2 problems" for the screen.
 void formatConfigSummary(const ConfigReport &r, char *out, size_t cap);
+
+// What the banner says about the settings file of an SD card, after a start that read one (a banner holds
+// 39 characters).  Returns true if it is a warning.
+//   carried        settings that the start before this one changed and saved without being able to say so:
+//                  it went on to install a firmware from the same card and restarted.  This start reads the
+//                  same file, finds nothing left to change, and would report that the card did nothing.
+//   justInstalled  this firmware came from the card at the last start, which read the same file.  If
+//                  nothing was carried over (the firmware that ran then did not keep a count yet), whether
+//                  the file changed anything is not known, so "none new" is left unsaid.
+// (Here, and not in settings.cpp, so that the UI preview can measure the texts it makes.)
+const char *const kSdNoteNvsKey = "sdnote";  // where `carried` is kept in flash, next to the settings: no setting may use this name
+inline bool formatSdBanner(const ConfigReport &r, bool savedToFlash, int carried, bool justInstalled, char *out, size_t cap) {
+  if (carried < 0) carried = 0;
+  const int changed = r.touched() + carried;
+  if (r.touched() > 0 && !savedToFlash) {  // in force for this run, gone after the next restart
+    snprintf(out, cap, "%d changed, NOT saved to flash", r.touched());
+    return true;
+  }
+  if (r.problems() > 0) {
+    snprintf(out, cap, "SD: %d changed, %d problem%s", changed, r.problems(), r.problems() == 1 ? "" : "s");
+    return true;
+  }
+  if (changed > 0) {
+    snprintf(out, cap, "SD settings: %d changed", changed);
+  } else if (r.unchanged == 0) {  // every line is a comment: the file the clock wrote, as it wrote it
+    snprintf(out, cap, "SD settings: the file sets nothing");
+  } else if (justInstalled) {
+    snprintf(out, cap, "SD settings: %d in force", r.unchanged);
+  } else {
+    snprintf(out, cap, "SD settings: %d in force, none new", r.unchanged);
+  }
+  return false;
+}
 
 // The file the clock writes to a card that has none: every setting commented out with its
 // current value (never passwords or ids) and an explanation.  `driftNote` (may be empty)

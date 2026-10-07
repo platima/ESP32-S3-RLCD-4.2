@@ -27,6 +27,8 @@ struct CfgStatus {
   Sd sd = SD_NOT_TRIED;
   int fromFlash = 0;         // settings that came from flash at this boot
   bool savedToFlash = false;
+  int carried = 0;           // settings a card changed at the start before this one, which restarted (to install a
+                             // firmware from the card) before it could say so; see cfgAnnounced()
   char file[40] = "";        // the file name that was found or written
   char card[24] = "";        // "SDHC 14.8 GB"
   ConfigReport report;
@@ -48,6 +50,12 @@ bool cfgSaveToFlash();
 // Looks for a card.  With a settings file: applies it on top of g_cfg and saves what it changed
 // to flash.  Without one: writes an example file to the card.  Unmounts the card again.
 void cfgImportSdCard();
+
+// The banner about what the card's settings did has been shown.  Until then the number of settings a card
+// changed is kept in flash: a start that goes on to install a firmware from the card restarts before it
+// gets to the banner, and the start after it reads the same file and finds nothing left to change.
+// g_cfgStatus.carried is that number as the start before this one left it.
+void cfgAnnounced();
 
 // One line for the Info page / a toast, and the first few problems: built-in defaults that were not
 // used, then those of the SD file.

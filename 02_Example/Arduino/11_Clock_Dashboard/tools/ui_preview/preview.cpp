@@ -11,6 +11,7 @@
 
 #include "../../calc.h"
 #include "../../sd_layout.h"
+#include "../../settings.h"
 
 #include <stdlib.h>
 #include <sys/stat.h>
@@ -1100,6 +1101,35 @@ static int checkButtonHelp() {
   }
   printf("SD card banners: %d texts, the widest takes %d px of %d, %d do not fit\n", sdTexts, widest, UI_WIDTH - 2 * kMargin, sdBad);
   bad += sdBad;
+  // what the clock says about the settings file of a card (settings.h), with counts beyond what a file can hold
+  {
+    int cfgTexts = 0, cfgBad = 0, cfgWidest = 0;
+    char widestText[sizeof m.toast] = "";
+    for (int changed : {0, 8888})
+      for (int unchanged : {0, 8888})
+        for (int problems : {0, 8888})
+          for (int carried : {0, 8888})
+            for (int flags = 0; flags < 4; flags++) {
+              ConfigReport rep;
+              rep.changed = changed;
+              rep.unchanged = unchanged;
+              rep.unknown = problems;
+              char text[sizeof m.toast];
+              const bool warn = formatSdBanner(rep, (flags & 1) != 0, carried, (flags & 2) != 0, text, sizeof text);
+              bannerText(text, warn ? TOAST_WARN : TOAST_NONE, &l, &r);
+              cfgTexts++;
+              if (r - l + 1 > cfgWidest) {
+                cfgWidest = r - l + 1;
+                setStr(widestText, sizeof widestText, text);
+              }
+              if (l < kMargin || r > UI_WIDTH - 1 - kMargin) {
+                if (cfgBad++ < 3) printf("  BANNER: \"%s\" does not fit (x=%d..%d)\n", text, l, r);
+              }
+            }
+    printf("settings banners: %d texts, the widest (\"%s\") takes %d px of %d, %d do not fit\n", cfgTexts, widestText, cfgWidest,
+           UI_WIDTH - 2 * kMargin, cfgBad);
+    bad += cfgBad;
+  }
   {  // negative control: the longest text a banner can be given does not fit, and the same measurement says so
     const std::string longest(sizeof m.toast - 1, 'W');
     bannerText(longest.c_str(), TOAST_NONE, &l, &r);

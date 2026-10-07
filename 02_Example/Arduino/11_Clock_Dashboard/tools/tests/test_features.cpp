@@ -489,6 +489,97 @@ void testSettingsReport() {
   CHECK_STR(apply(std::string(nulText, sizeof nulText - 1)).s.wifiSsid, "a?b");
 }
 
+// The banner after a start that read a settings file, and after one that could not say what it had done.
+void testSdBanner() {
+  section("settings file: the banner");
+  char b[40];
+  bool warn = false;
+  auto banner = [&](const ConfigReport &r, bool saved, int carried, bool justInstalled) {
+    warn = formatSdBanner(r, saved, carried, justInstalled, b, sizeof b);
+    return std::string(b);
+  };
+
+  // As it went on the board: a card with four settings and a firmware file.  The start that read it changed
+  // the four, saved them, installed the firmware and restarted before its banner; the next start read the
+  // same file, found nothing to change, and said "nothing new" of settings the owner had just added.
+  const std::string file = "wifi_mode = sync\nspotify_live = off\ncpu_idle_mhz = 20\nconsole = auto\n";
+  const Applied first = apply(file);
+  CHECK(first.r.changed == 4 && first.r.touched() == 4 && first.r.unchanged == 0 && first.r.problems() == 0);
+  CHECK(banner(first.r, true, 0, false) == "SD settings: 4 changed" && !warn);  // (what was never shown)
+  const Applied second = apply(file, first.s);
+  CHECK(second.r.touched() == 0 && second.r.unchanged == 4 && second.r.problems() == 0);
+  CHECK(dump(second.s) == dump(first.s));
+  // with the count the first start left behind, the second says what the card did
+  CHECK(banner(second.r, false, first.r.touched(), true) == "SD settings: 4 changed" && !warn);
+  // without one (the firmware that ran first did not keep a count yet) it says what it knows, and no more
+  CHECK(banner(second.r, false, 0, true) == "SD settings: 4 in force" && !warn);
+  // an ordinary restart with the card left in
+  CHECK(banner(second.r, false, 0, false) == "SD settings: 4 in force, none new" && !warn);
+  // (nothing was saved at such a start because nothing changed: that is not "NOT saved")
+  CHECK(banner(second.r, false, 0, false).find("NOT") == std::string::npos);
+
+  // the new firmware changes one more (a setting the old one did not know): the counts add up
+  const Applied third = apply("units = imperial\n" + file, first.s);
+  CHECK(third.r.changed == 1 && third.r.unchanged == 4);
+  CHECK(banner(third.r, true, 3, true) == "SD settings: 4 changed" && !warn);
+  CHECK(banner(third.r, true, 0, false) == "SD settings: 1 changed" && !warn);
+  // flash would not take them: a warning, and only what this start changed (what was carried had been saved)
+  CHECK(banner(third.r, false, 3, false) == "1 changed, NOT saved to flash" && warn);
+
+  // problems are a warning, whatever else there is
+  const Applied bad = apply("wifi = maybe\n" + file, first.s);
+  CHECK(bad.r.problems() == 1 && bad.r.touched() == 0);
+  CHECK(banner(bad.r, false, 0, false) == "SD: 0 changed, 1 problem" && warn);
+  CHECK(banner(bad.r, false, 4, true) == "SD: 4 changed, 1 problem" && warn);
+  CHECK(banner(apply("wifi = maybe\ncolour = red\nunits = imperial\n").r, true, 0, false) == "SD: 1 changed, 2 problems" && warn);
+
+  // a file that is all comments, as the clock writes it
+  const Applied comments = apply("# units = metric\r\n\r\n# wifi = on\r\n");
+  CHECK(comments.r.touched() == 0 && comments.r.unchanged == 0 && comments.r.problems() == 0);
+  CHECK(banner(comments.r, false, 0, false) == "SD settings: the file sets nothing" && !warn);
+  CHECK(banner(comments.r, false, 0, true) == "SD settings: the file sets nothing" && !warn);
+  CHECK(banner(comments.r, false, 2, true) == "SD settings: 2 changed" && !warn);  // (the card was swapped: still said)
+  // a setting that is forgotten, and reset_all, are changes
+  const Applied forgot = apply("units =\n", third.s);
+  CHECK(forgot.r.cleared == 1 && forgot.r.changed == 0);
+  CHECK(banner(forgot.r, true, 0, false) == "SD settings: 1 changed" && !warn);
+  CHECK(banner(apply("reset_all = yes\n", third.s).r, true, 0, false) == "SD settings: 1 changed" && !warn);
+  // no card at this start (an empty report): what the last start changed is still said
+  CHECK(banner(ConfigReport(), true, 4, false) == "SD settings: 4 changed" && !warn);
+  // a count that makes no sense is no count
+  CHECK(banner(second.r, false, -3, false) == "SD settings: 4 in force, none new" && !warn);
+  CHECK(banner(third.r, true, -3, false) == "SD settings: 1 changed" && !warn);
+
+  // every text fits a banner of 39 characters, with counts beyond what a file of 32 KB can reach
+  int texts = 0, tooLong = 0;
+  for (int changed : {0, 1, 9999})
+    for (int unchanged : {0, 1, 9999})
+      for (int problems : {0, 1, 9999})
+        for (int carried : {0, 9999})
+          for (int flags = 0; flags < 4; flags++) {
+            ConfigReport r;
+            r.changed = changed;
+            r.unchanged = unchanged;
+            r.unknown = problems;
+            const std::string text = banner(r, (flags & 1) != 0, carried, (flags & 2) != 0);
+            texts++;
+            if (text.empty() || text.size() > 39) tooLong++;
+          }
+  CHECK(texts == 216 && tooLong == 0);
+  ConfigReport big;
+  big.changed = big.unchanged = big.unknown = 9999;
+  char tiny[8];
+  volatile size_t tinyCap = sizeof tiny;  // (volatile: the compiler would otherwise warn that this text is cut, which is the point)
+  formatSdBanner(big, true, 9999, false, tiny, tinyCap);  // must stay inside the buffer
+  CHECK(strlen(tiny) < sizeof tiny);
+
+  // the count that is carried lives in flash next to the settings: its name is no setting's, and fits (15 characters)
+  CHECK(strlen(kSdNoteNvsKey) >= 1 && strlen(kSdNoteNvsKey) <= 15);
+  int clashes = 0;
+  for (size_t i = 0; i < settingCount(); i++) clashes += strcmp(settingNvsKey(i), kSdNoteNvsKey) == 0;
+  CHECK(clashes == 0);
+}
+
 void testSettingsForget() {
   section("settings file: forgetting and reset_all");
   Settings defaults;
@@ -2746,6 +2837,7 @@ int main(int argc, char **argv) {
   testSettingsRejects();
   testSettingsTimezone();
   testSettingsReport();
+  testSdBanner();
   testSettingsForget();
   testSettingsExample();
   testBackupWifiSettings();

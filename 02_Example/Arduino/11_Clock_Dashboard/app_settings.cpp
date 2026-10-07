@@ -66,6 +66,28 @@ bool saveToFlash(const Settings &s, bool clearFirst) {
   return ok;
 }
 
+// Not a setting: how many settings a card has changed that no banner has told of yet (cfgAnnounced()).
+const char *const kNoteKey = kSdNoteNvsKey;
+
+int readNote() {
+  Preferences p;
+  if (!p.begin(kNamespace, true)) return 0;  // nothing has ever been saved
+  const int n = p.isKey(kNoteKey) ? (int)p.getInt(kNoteKey, 0) : 0;
+  p.end();
+  return n > 0 ? n : 0;
+}
+
+void writeNote(int n) {  // 0 takes it away
+  Preferences p;
+  if (!p.begin(kNamespace, false)) return;
+  if (n > 0) {
+    p.putInt(kNoteKey, n);
+  } else if (p.isKey(kNoteKey)) {
+    p.remove(kNoteKey);
+  }
+  p.end();
+}
+
 }  // namespace
 
 Settings cfgBuildDefaults() {
@@ -103,6 +125,8 @@ void cfgLoadFlash() {
 
 void cfgImportSdCard() {
   CfgStatus &st = g_cfgStatus;
+  st.carried = readNote();
+  if (st.carried > 0) LOGF(TAG, "the start before this one changed %d setting(s) from a card and restarted before saying so", st.carried);
   const SdStatus mount = sdMount();
   if (mount == SdStatus::NO_CARD) {
     st.sd = CfgStatus::SD_NO_CARD;
@@ -160,7 +184,15 @@ void cfgImportSdCard() {
   if (st.report.touched() > 0) {  // keep what the card said, so the card can come out
     st.savedToFlash = saveToFlash(g_cfg, st.report.resetAll);
     LOGF(TAG, "settings %s flash", st.savedToFlash ? "saved to" : "could NOT be saved to");
+    // ... and how many there were, until the banner has said so: with a firmware file on the card too, this
+    // start ends in a restart before the banner, and the next one finds nothing left to change in the file.
+    // (Settings that could not be saved are found changed again by the next start: nothing to carry.)
+    if (st.savedToFlash) writeNote(st.carried + st.report.touched());
   }
+}
+
+void cfgAnnounced() {
+  if (readNote() > 0) writeNote(0);
 }
 
 void cfgSummary(char *out, size_t cap) {
