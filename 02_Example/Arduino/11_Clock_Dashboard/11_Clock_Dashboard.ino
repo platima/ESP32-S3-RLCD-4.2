@@ -413,15 +413,21 @@ static void estimateText(char *out, size_t cap) {
   char left[24];
   switch (e.state) {
     case battest::Estimate::READY:
-      if (e.unbounded && s_chargeState != CHARGE_DISCHARGING) {
+      if (e.pctPerHour < battest::kMinRatePctPerHour && s_chargeState != CHARGE_DISCHARGING) {
         // no fall to speak of, and no fall was ever seen: a charger that has finished looks like this for the
         // first hours after a start (charge.h), and so does a clock that draws next to nothing
         snprintf(out, cap, "no drain to measure (on a charger?)");
-      } else if (e.unbounded) {
+      } else if (e.pctPerHour < battest::kMinRatePctPerHour) {
         snprintf(out, cap, "more than a month at this rate");
       } else {
-        battest::formatRemaining(e.hoursLeft, left, sizeof left);
-        snprintf(out, cap, "%s (%.1f %%/h over %d min)", left, (double)e.pctPerHour, e.windowMin);
+        battest::formatRemaining(e.hoursLeft, left, sizeof left);  // (">30 d" beyond a month: the rate is still worth reading)
+        // two decimals under 10 %/h: with the radio mostly off the whole figure is 0.2 to 0.7, and rounded to
+        // one decimal two settings that differ by a third read the same
+        if (e.pctPerHour < 9.995f) {
+          snprintf(out, cap, "%s (%.2f %%/h over %d min)", left, (double)e.pctPerHour, e.windowMin);
+        } else {
+          snprintf(out, cap, "%s (%.1f %%/h over %d min)", left, (double)e.pctPerHour, e.windowMin);
+        }
       }
       break;
     case battest::Estimate::LEARNING: snprintf(out, cap, "learning: first figure in %d min", e.learnMin); break;
@@ -629,7 +635,11 @@ static void buildInfoPower(UiModel &m, const SharedState &s) {
   if (s_batHave && s_estGate.onBattery() && g_cfg.batteryCapacityMah > 0) {
     const battest::Estimate e = s_est.estimate(g_cfg.batteryCutoffV, (float)g_cfg.batteryCapacityMah);
     if (e.state == battest::Estimate::READY) {
-      snprintf(v, sizeof v, "about %.0f mA (of %d mAh)", (double)e.avgMa, (int)g_cfg.batteryCapacityMah);
+      if (e.avgMa < 99.95f) {  // (one decimal while it tells something: 9.6 and 10.4 mA are both "about 10")
+        snprintf(v, sizeof v, "about %.1f mA (of %d mAh)", (double)e.avgMa, (int)g_cfg.batteryCapacityMah);
+      } else {
+        snprintf(v, sizeof v, "about %.0f mA (of %d mAh)", (double)e.avgMa, (int)g_cfg.batteryCapacityMah);
+      }
     } else {
       snprintf(v, sizeof v, "being measured (%d mAh)", (int)g_cfg.batteryCapacityMah);
     }

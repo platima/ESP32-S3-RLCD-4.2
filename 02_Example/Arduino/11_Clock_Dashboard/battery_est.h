@@ -38,6 +38,7 @@ namespace battest {
 
 const int kMaxBins = 96;     // 8 hours of 5 minute points
 const int kMaxSamples = 40;  // readings kept per bin (one every 5 s fills 60 per bin; the first 40 count)
+const float kMinRatePctPerHour = 0.02f;  // a fall slower than this is no fall that can be measured: no rate, no time left
 
 struct Params {
   uint32_t binSec = 300;
@@ -159,7 +160,7 @@ class Estimator {
     const float cutPct = calc::batteryPercentF(cutoffV);
     float above = e.levelPct - cutPct;
     if (above < 0) above = 0;
-    if (e.pctPerHour < 0.02f) {
+    if (e.pctPerHour < kMinRatePctPerHour) {
       e.unbounded = true;
       e.hoursLeft = 0;
     } else {

@@ -1,7 +1,7 @@
 # 11_Clock_Dashboard
 
 A desk clock for the Waveshare ESP32-S3-RLCD-4.2: it joins your WiFi, sets the time over NTP, works out the
-time zone (including daylight saving) by itself, and shows everything on the reflective LCD. Version **1.5**
+time zone (including daylight saving) by itself, and shows everything on the reflective LCD. Version **1.6**
 ([what changed](#versions)).
 
 <img src="docs/dashboard.png" alt="Dashboard" width="560">
@@ -527,9 +527,9 @@ The *System info* page has a **Left** line, and the *Power and settings* page th
 </p>
 
 ```
-Battery   3.86 V  54%  discharging -1.2 mV/min
-Left      5 h 40 min (3.2 %/h over 180 min)
-Current   about 32 mA (of 2500 mAh)            <- when battery_capacity_mah is set
+Battery   4.09 V  87%  discharging -0.1 mV/min
+Left      3 d 0 h (1.20 %/h over 300 min)
+Current   about 30.0 mA (of 2500 mAh)          <- when battery_capacity_mah is set
 ```
 
 * The voltage is turned into a percentage through the discharge curve *first*. The same drain in mA is a very different
@@ -615,7 +615,8 @@ Four settings go further than `wifi_power_save`: **`wifi_mode = sync`** keeps th
 off, and **`console = auto`** (or `off`) shuts the USB serial console down. All four are **off by default**, and they
 have **only just been switched on on a real board** (7 October 2026: the processor was seen to drop to 20 MHz; nothing
 has been measured yet): what follows is what the code does and what a PC simulation of its rules says, not a
-measurement. If you have a USB power meter, the figures this section lacks are exactly the ones worth sending back.
+measurement. If you have a USB power meter, the figures this section lacks are exactly the ones worth sending back, and
+without one the clock's own runtime estimate will do: see [Logging a battery run](#logging-a-battery-run).
 [What is switched off](#what-is-switched-off) lists every part of the board and what the clock does about it.
 
 ### WiFi sync mode
@@ -777,6 +778,43 @@ tried on the board**; what they save has not been measured either. The codec's d
 power-on anyway (then nothing is gained there); for the microphone ADC, which draws 63 mW when it runs and 10 µA powered
 down, no statement about its state after power-on was found, which is why both are told rather than left alone.
 
+### Logging a battery run
+
+What a setting saves shows in how fast the battery goes down, and the clock measures that itself. To compare settings,
+make one run with each on the same cell and write the readings into [`docs/power-log.csv`](docs/power-log.csv), one
+line per reading. The sheet comes with a line for each of five runs worth making (the stock settings with and without
+WiFi, a middle ground, and the two lowest): copy a run's line for every reading you take of it.
+
+1. Charge the cell until the charger has finished and unplug it. Put the card in with the settings of the run, with
+   every setting that differs between the runs written out (the clock keeps what an earlier card told it), and
+   **restart the clock: hold KEY for five seconds**. A clock that has seen no charger since it started measures from
+   the first minute, and every run then covers the same stretch of the cell.
+2. Take the card out again (one that stays in draws a little), keep the music the same in every run, and take the first
+   reading.
+3. Read again after an hour, and then every few hours. The first figure comes after 50 minutes and is rough; four to
+   six hours give a rate that two settings can be told apart by.
+
+| Column | What goes in it |
+| --- | --- |
+| `test` | A name for the run, the same on all its lines |
+| `firmware` | The version and the build id, from the first line of the *System info* page: `1.6 3f9a12c` |
+| `wifi`, `wifi_mode`, `wifi_power_save`, `cpu_idle_mhz`, `spotify_live`, `console` | The settings of the run, as the settings file has them |
+| `battery_capacity_mah` | What is printed on the cell |
+| `card`, `music` | `in` or `out`; `none`, `playing` or `paused` |
+| `date`, `time`, `uptime` | When the reading was taken (`2026-10-08`, `14:30`), and the *Uptime* line (`0d 3h 12m`) |
+| `clock_shown` | *Power and settings*, the *Power* line: `20 idle`. Wait ten seconds after the last button press: a press takes the processor to full speed for eight |
+| `radio_on_pct`, `radio_sessions` | The *Radio* line (only with `wifi_mode = sync`): `0.8` and `96` |
+| `battery_v`, `battery_pct` | *Power and settings*, the *Battery* line: `4.092` and `87.0` |
+| `battery_state` | *System info*, the *Battery* line: `on battery?`, `discharging`, `charging` or `full` |
+| `left`, `pct_per_hour`, `over_min` | The *Left* line, `3 d 0 h (1.20 %/h over 300 min)`: `3 d 0 h`, `1.20` and `300`. Copy the time exactly: up to 1.5 the rate is shown with one decimal only, and the time is then the finer figure of the two |
+| `clock_ma`, `meter_ma` | The *Current* line (it needs `battery_capacity_mah` in the settings), and what a meter in the supply reads, if you have one |
+| `free_kb`, `frames_sent`, `frames_late`, `frames_worst_ms` | *System info*, the *Uptime* and *Frames* lines: the memory left, and whether the seconds still come on time |
+| `notes` | Anything else. In quotes if it has a comma in it |
+
+Edit it as text or in a spreadsheet (saved as CSV again). `bash tools/tests/run_tests.sh` reads the sheet: it names a
+line that has a field too few or too many, and a setting's column that holds something the settings file would not
+take.
+
 ## Troubleshooting
 
 | Symptom | What to try |
@@ -923,7 +961,7 @@ since (7 October 2026) noted item by item:
 | `app_state.*`, `app_model.h` | Data shared between the two cores |
 | `calc.h`, `timeutil.h`, `buttons.h`, `util.h` | Pure helpers, covered by the host tests |
 | `tz_table.cpp` | Generated by `tools/gen_tz_table.py` |
-| `docs/` | The pictures, and `ESP32-S3-RLCD-Config.example.txt` |
+| `docs/` | The pictures, `ESP32-S3-RLCD-Config.example.txt`, and `power-log.csv`, the sheet for the readings of battery runs |
 
 ## Developer tools
 
@@ -976,6 +1014,15 @@ build the sketch.
 `APP_VERSION` in `config.h`. It is not semver: the number goes up by hand with each batch of changes that is handed
 over to run on a board. The *System info* page shows it together with a build id, which tells two builds of one version
 apart (*Which build is running?* under [Updating the firmware from the SD card](#updating-the-firmware-from-the-sd-card)).
+
+**1.6** (8 October 2026)
+
+* **For comparing settings by their drain:** the *Left* line gives the rate with two decimals (`0.31 %/h`; with the
+  radio mostly off the whole figure is 0.2 to 0.7, and one decimal could not tell two settings apart), it keeps
+  giving the rate when the time left is more than a month (`>30 d (0.11 %/h over 480 min)`), and the *Current* line
+  has a decimal. [`docs/power-log.csv`](docs/power-log.csv) is a sheet for the readings, see
+  [Logging a battery run](#logging-a-battery-run). Nothing else changes: a run made with 1.5 compares with one made
+  with 1.6.
 
 **1.5** (7 October 2026)
 

@@ -2814,6 +2814,120 @@ void testReadmeLists(const char *path) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// docs/power-log.csv: the sheet for the readings of battery runs.  It is filled in by hand (and by spreadsheets,
+// which leave their marks), so it is read here the way it will be read later, and a line that is wrong is named.
+// ---------------------------------------------------------------------------
+
+// One line of a CSV file as its fields, with quotes the way spreadsheets write them ("a, b" and "say ""hi""").
+std::vector<std::string> csvFields(const std::string &line) {
+  std::vector<std::string> out(1);
+  bool quoted = false;
+  for (size_t i = 0; i < line.size(); i++) {
+    const char c = line[i];
+    if (quoted) {
+      if (c == '"' && i + 1 < line.size() && line[i + 1] == '"') {
+        out.back() += '"';
+        i++;
+      } else if (c == '"') {
+        quoted = false;
+      } else {
+        out.back() += c;
+      }
+    } else if (c == '"') {
+      quoted = true;
+    } else if (c == ',') {
+      out.emplace_back();
+    } else {
+      out.back() += c;
+    }
+  }
+  return out;
+}
+
+// What is wrong with a power log: the number of problems, each said if `say`.  The heading has to be made of
+// plain names that the README explains, every line needs as many fields as the heading, and a column that is
+// named after a setting may only hold what the settings file would take for it (or nothing).
+int powerLogProblems(const std::string &csv, const std::string &readme, bool say) {
+  int problems = 0;
+  auto bad = [&](int line, const std::string &what) {
+    problems++;
+    if (say) printf("  power-log.csv line %d: %s\n", line, what.c_str());
+  };
+  const size_t start = csv.compare(0, 3, "\xEF\xBB\xBF") == 0 ? 3 : 0;  // (a spreadsheet's byte-order mark)
+  std::vector<std::string> head;
+  int lineNo = 0;
+  for (size_t pos = start; pos < csv.size();) {
+    size_t end = csv.find('\n', pos);
+    if (end == std::string::npos) end = csv.size();
+    std::string line = csv.substr(pos, end - pos);
+    pos = end + 1;
+    lineNo++;
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    if (lineNo == 1) {
+      head = csvFields(line);
+      for (size_t i = 0; i < head.size(); i++) {
+        const std::string &name = head[i];
+        bool plain = !name.empty();
+        for (char c : name) plain = plain && ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_');
+        if (!plain) bad(1, "the column name '" + name + "' is not made of a-z, 0-9 and _");
+        for (size_t k = 0; k < i; k++)
+          if (head[k] == name) bad(1, "the column '" + name + "' is there twice");
+        if (plain && readme.find("`" + name + "`") == std::string::npos) bad(1, "the README does not explain the column `" + name + "`");
+      }
+      continue;
+    }
+    if (line.empty()) continue;  // (a blank line, as at the end of a file saved by a spreadsheet)
+    const std::vector<std::string> f = csvFields(line);
+    if (f.size() != head.size()) {
+      bad(lineNo, std::to_string(f.size()) + " fields where the heading has " + std::to_string(head.size()));
+      continue;
+    }
+    for (size_t i = 0; i < head.size(); i++) {
+      if (f[i].empty() || idx(head[i].c_str()) == (size_t)-1) continue;  // empty, or no setting's column
+      if (apply(head[i] + " = " + f[i] + "\n").r.problems() != 0) bad(lineNo, "'" + f[i] + "' is not a value of the setting " + head[i]);
+    }
+  }
+  if (head.empty()) bad(1, "no heading");
+  return problems;
+}
+
+void testPowerLog() {
+  section("docs/power-log.csv");
+  const std::string csv = readFile("../../docs/power-log.csv"), readme = readFile("../../README.md");
+  CHECK(!csv.empty() && !readme.empty());
+  CHECK(powerLogProblems(csv, readme, true) == 0);
+  // the columns that say which settings a run was made with are settings, by the names the settings file uses
+  // (a setting that is renamed takes its column along), and the ones a rate is worked out from are there
+  const std::vector<std::string> head = csvFields(csv.substr(0, csv.find_first_of("\r\n")));
+  auto has = [&](const char *name) {
+    for (const std::string &h : head)
+      if (h == name) return true;
+    return false;
+  };
+  for (const char *setting : {"wifi", "wifi_mode", "wifi_power_save", "cpu_idle_mhz", "spotify_live", "console", "battery_capacity_mah"}) {
+    if (!has(setting) || idx(setting) == (size_t)-1) printf("  power-log.csv: no column for the setting %s\n", setting);
+    CHECK(has(setting) && idx(setting) != (size_t)-1);
+  }
+  for (const char *reading : {"test", "firmware", "date", "time", "battery_v", "battery_pct", "left", "pct_per_hour", "over_min"}) CHECK(has(reading));
+
+  // the check can fail: a made-up sheet, right and then wrong in one way at a time
+  const std::string doc = "`test` `wifi_mode` `cpu_idle_mhz` `battery_pct` `notes`";
+  const std::string h = "test,wifi_mode,cpu_idle_mhz,battery_pct,notes\n";
+  CHECK(powerLogProblems(h + "a,sync,20,99.1,\n" + "a,always,off,,\n", doc, false) == 0);
+  CHECK(powerLogProblems("\xEF\xBB\xBF" + h + "a,sync,20,99.1,\"wet, cold, \"\"quoted\"\"\"\r\n\r\n", doc, false) == 0);  // as a spreadsheet saves it
+  CHECK(csvFields("a,\"b, c\",,\"say \"\"hi\"\"\",").size() == 5 && csvFields("a,\"b, c\",,\"say \"\"hi\"\"\",")[3] == "say \"hi\"");
+  CHECK(powerLogProblems(h + "a,sync,20,99.1\n", doc, false) == 1);        // a field short
+  CHECK(powerLogProblems(h + "a,sync,20,99.1,x,y\n", doc, false) == 1);    // one too many (a comma in a note that is not quoted)
+  CHECK(powerLogProblems(h + "a,synch,20,99.1,\n", doc, false) == 1);      // not a value of wifi_mode
+  CHECK(powerLogProblems(h + "a,sync,30,99.1,\n", doc, false) == 1);       // 30 MHz is not on offer
+  CHECK(powerLogProblems(h + "a,sync,20,99.1,\n" + "b,sync,10,98.9,\n", doc, false) == 1);  // ... and only the line that is wrong counts
+  CHECK(powerLogProblems(h + "a,sync,20,99.1,\n", "`test` `wifi_mode` `cpu_idle_mhz` `battery_pct`", false) == 1);  // a column the README does not explain
+  CHECK(powerLogProblems("test,Wifi Mode,notes\na,sync,\n", doc, false) == 1);   // a name a script could not use
+  CHECK(powerLogProblems("test,notes,test\na,,b\n", doc, false) == 1);           // a column twice
+  CHECK(powerLogProblems("", doc, false) == 1 && powerLogProblems("\n", doc, false) >= 1);  // nothing at all
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -2823,6 +2937,7 @@ int main(int argc, char **argv) {
   }
   testRepoExampleFile(false);
   testReadmeLists("../../README.md");
+  testPowerLog();
   testMoonPhase();
   testMoonGlyph();
   testDateFormats();
