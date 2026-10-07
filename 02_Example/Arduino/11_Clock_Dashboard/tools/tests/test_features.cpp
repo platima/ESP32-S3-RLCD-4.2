@@ -1190,6 +1190,28 @@ void testBatteryCurve() {
   CHECK_NEAR(calc::batteryVoltsForPercent(-5), 3.27, 1e-6);
   // volts fall as percent falls
   for (int i = 1; i <= 100; i++) CHECK(calc::batteryVoltsForPercent((float)i) > calc::batteryVoltsForPercent((float)i - 1));
+
+  // The curve carried on above its top, for the runtime estimate: the same up to 4.20 V, then 10 mV to the percent
+  // (seen on the board: 4.223 V on the charger, 4.210 V a minute after it), and it never stands still.
+  for (int mv = 3000; mv <= 4200; mv++) CHECK(calc::batteryPercentOpen(mv / 1000.0f) == calc::batteryPercentF(mv / 1000.0f));
+  CHECK_NEAR(calc::batteryPercentOpen(4.21f), 101.0, 0.01);
+  CHECK_NEAR(calc::batteryPercentOpen(4.223f), 102.3, 0.01);
+  CHECK_NEAR(calc::batteryPercentOpen(4.30f), 110.0, 0.01);
+  float lastOpen = calc::batteryPercentOpen(4.150f);
+  for (int mv = 4151; mv <= 4300; mv++) {
+    const float p = calc::batteryPercentOpen(mv / 1000.0f);
+    CHECK(p > lastOpen && p - lastOpen < 0.11f);  // rising all the way, with no step where the two halves meet
+    lastOpen = p;
+  }
+  {  // a cell read as 4.215 V that falls 3 mV an hour: the rate is seen, and the time left is that of a full cell, no more
+    battest::Estimator est;
+    for (uint32_t t = 0; t <= 3 * 3600; t += 5) est.add(t, 4.215f - 0.003f * (float)t / 3600.0f);
+    const battest::Estimate e = est.estimate(3.30f, 0);
+    CHECK(e.state == battest::Estimate::READY && !e.unbounded);
+    CHECK_NEAR(e.pctPerHour, 0.30, 0.02);
+    CHECK_NEAR(e.levelPct, 100.6, 0.1);  // 4.206 V after three hours: over the top of the curve still
+    CHECK_NEAR(e.hoursLeft, (100.0 - calc::batteryPercentF(3.30f)) / e.pctPerHour, 0.5);  // (0.6 % more would be two hours more)
+  }
 }
 
 // A deterministic reading source for the estimator tests.

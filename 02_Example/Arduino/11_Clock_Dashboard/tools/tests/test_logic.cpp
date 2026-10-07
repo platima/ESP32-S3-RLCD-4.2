@@ -859,6 +859,9 @@ static void testEstimateUnderLightLoad() {
       {"started at 99 %, falling 0.05 mV/min", 4.19, 0.05, 0.30},
       {"started at 99 %, falling 0.12 mV/min", 4.19, 0.12, 0.72},
       {"started at 97 %, falling 0.03 mV/min", 4.17, 0.03, 0.18},
+      // as read on the board a minute after the charger: over the top of the curve, where a level that is cut
+      // off at 100 % stands still for the first hours
+      {"started at 4.215 V, over the top of the curve, falling 0.05 mV/min", 4.215, 0.05, 0.30},
   };
   for (const Case &c : cases) {
     forSeeds(c.name, [c](uint64_t seed, Verdict &v) {

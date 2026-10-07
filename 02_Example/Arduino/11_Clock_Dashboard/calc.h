@@ -61,6 +61,19 @@ inline float batteryPercentF(float volts) {
 
 inline int batteryPercent(float volts) { return (int)lroundf(batteryPercentF(volts)); }
 
+// The same curve carried on above its top, with the slope of its last stretch (10 mV to the percent): 4.223 V is
+// 102.3.  For the runtime estimate only, which measures how fast the level falls.  A cell that has just come off
+// the charger reads above 4.20 V for a while, and so does any cell whose charger holds a shade over 4.20 V (they
+// may, by a percent) or whose calibration is a shade high.  Cut off at 100 the level would stand still while the
+// voltage came down, and under a light load that is hours in which the estimate sees no drain at all (seen on the
+// board: 4.223 V on the charger, 4.210 V a minute after it, then 0.05 mV a minute).  The gauge stops at 100.
+inline float batteryPercentOpen(float volts) {
+  int n;
+  const BatteryPoint *c = batteryCurve(&n);
+  if (volts > c[0].v) return 100.0f + (volts - c[0].v) * (float)(c[0].pct - c[1].pct) / (c[0].v - c[1].v);
+  return batteryPercentF(volts);
+}
+
 // The curve backwards: the voltage at which a cell reads `pct` percent (0..100).
 inline float batteryVoltsForPercent(float pct) {
   int n;

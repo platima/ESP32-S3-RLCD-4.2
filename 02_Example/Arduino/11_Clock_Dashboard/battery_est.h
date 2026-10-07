@@ -106,7 +106,7 @@ class Estimator {
     }
     lastSec_ = nowSec;
     if (curN_ < kMaxSamples) {
-      cur_[curN_++] = calc::batteryPercentF(volts);
+      cur_[curN_++] = calc::batteryPercentOpen(volts);  // (not cut off at 100: a fall from 4.22 V to 4.20 V is a fall)
       curOffsetSum_ += (double)(nowSec - bin * p_.binSec);
     }
   }
@@ -158,7 +158,7 @@ class Estimator {
     if (e.pctPerHour < 0) e.pctPerHour = 0;
     if (capacityMah > 0) e.avgMa = e.pctPerHour / 100.0f * capacityMah;
     const float cutPct = calc::batteryPercentF(cutoffV);
-    float above = e.levelPct - cutPct;
+    float above = (e.levelPct > 100.0f ? 100.0f : e.levelPct) - cutPct;  // (a cell holds no more than all of its charge)
     if (above < 0) above = 0;
     if (e.pctPerHour < kMinRatePctPerHour) {
       e.unbounded = true;

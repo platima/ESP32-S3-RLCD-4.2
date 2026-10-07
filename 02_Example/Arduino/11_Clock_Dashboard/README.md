@@ -439,7 +439,9 @@ it is not 1.
 3. Allowed are factors from 0.80 to 1.25; `batcal` refuses a figure that is further off than that, as it means a wiring
    problem or a typo, not the ADC. The best moment to calibrate is a cell the charger has finished with (4.20 V): the
    voltage then holds still while you read both, and a multiplier's error is largest at the top. The result is only as
-   good as the tester you hold.
+   good as the tester you hold. A clock that reads a little over 4.20 V on the charger afterwards (4.22 V, say) is not
+   proof of a wrong factor: chargers hold 4.20 V to within about a percent either way. Only the tester can tell the
+   two apart.
 
 <img src="docs/battery-states.png" alt="Battery gauge states" width="300">
 
@@ -539,6 +541,9 @@ Current   about 30.0 mA (of 2500 mAh)          <- when battery_capacity_mah is s
 * It is worked out whenever no charger shows (the gauge has neither the bolt nor the tick), which after a start on the
   battery is from the first minute: see *What that means for the runtime estimate* above for the one case that takes
   longer, a clock unplugged from a charger that had finished.
+* Above 4.20 V the gauge says 100 % and stays there, but the estimate goes on with the same 10 mV to the percent: a
+  cell just off the charger reads a little over 4.20 V (4.21 to 4.22 V on the board this was written on), and its
+  coming down from there is drain like any other.
 * Readings are boiled down to one point per five minutes (their median, so the dips of WiFi transmissions vanish), the
   first 15 minutes after the clock went onto the battery are ignored (a cell just off the charger is still settling),
   and the first figure appears after 30 minutes of settled readings (the page says *learning: first figure in N min*):
@@ -1021,8 +1026,12 @@ apart (*Which build is running?* under [Updating the firmware from the SD card](
   radio mostly off the whole figure is 0.2 to 0.7, and one decimal could not tell two settings apart), it keeps
   giving the rate when the time left is more than a month (`>30 d (0.11 %/h over 480 min)`), and the *Current* line
   has a decimal. [`docs/power-log.csv`](docs/power-log.csv) is a sheet for the readings, see
-  [Logging a battery run](#logging-a-battery-run). Nothing else changes: a run made with 1.5 compares with one made
-  with 1.6.
+  [Logging a battery run](#logging-a-battery-run).
+* **A run that starts straight off the charger** (found on the board: 4.223 V on the charger, 4.210 V a minute after
+  it). The gauge stops at 100 % from 4.20 V up, and the estimate used the same figure: while the cell came down from
+  4.22 V to 4.20 V, which takes hours under a light load, it saw a level that stood still and reported no drain, and
+  the hours after were averaged with that. The estimate now follows the voltage above 4.20 V too. A run that was
+  made with 1.5 and started above 4.20 V reads too low for its first hours; below 4.20 V the two versions agree.
 
 **1.5** (7 October 2026)
 
