@@ -137,4 +137,78 @@ inline void describe(const Decision &d, int batteryMv, char *out, size_t cap) {
   snprintf(out, cap, "%s", s);
 }
 
+// ---------------------------------------------------------------------------
+// Installing: the two passes over the file
+// ---------------------------------------------------------------------------
+// First the whole file is read and checked against the SHA-256 at its end, so that nothing is written until
+// the copy on the card is known to be good; then it is read again and written to the other app slot.
+//
+// Written against three small interfaces, so that tools/tests runs this very code on a PC with a made-up
+// file and a made-up flash (fw_update.cpp plugs in the card, mbedTLS and the core's Update class):
+//
+//   Source   bool readAt(uint32_t offset, void *buf, uint32_t n)   all n bytes from that place, or false
+//   Hash     void update(const uint8_t *p, uint32_t n);  void finish(uint8_t *out32)
+//   Sink     bool begin(uint32_t size);  bool write(uint8_t *p, uint32_t n);  bool end();
+//            const char *error();  void abort()
+//   progress(Pass, percent)
+//
+// Every read says where it reads from.  (The first version read "what comes next", after the caller had
+// already read the header for a look: the check ran 208 bytes off and came up short at the very end, on
+// every file.  It had only ever been compiled.)
+enum class Pass : uint8_t { CHECK, WRITE };
+
+const char *const kReadError = "Cannot read the file (card error)";
+const char *const kDamaged = "The file is damaged: copy it again";
+const char *const kTooSmall = "The file is too small to be the firmware";
+
+// Returns nullptr when the new firmware is in place, else a short reason for the screen.
+template <class Source, class Hash, class Sink, class Progress>
+const char *installImage(Source &source, uint32_t size, Hash &hash, Sink &sink, uint8_t *buf, uint32_t chunk, Progress progress) {
+  if (size <= kDigestBytes || chunk == 0) return kTooSmall;
+
+  // 1. the file against its own checksum
+  const uint32_t body = size - (uint32_t)kDigestBytes;
+  progress(Pass::CHECK, 0);
+  int shown = 0;
+  for (uint32_t done = 0; done < body;) {
+    const uint32_t n = body - done < chunk ? body - done : chunk;
+    if (!source.readAt(done, buf, n)) return kReadError;
+    hash.update(buf, n);
+    done += n;
+    const int pct = (int)((uint64_t)done * 100 / body);
+    if (pct >= shown + 4 || (done == body && pct != shown)) {
+      shown = pct;
+      progress(Pass::CHECK, pct);
+    }
+  }
+  uint8_t calc[kDigestBytes], trailer[kDigestBytes];
+  hash.finish(calc);
+  if (!source.readAt(body, trailer, (uint32_t)kDigestBytes)) return kReadError;
+  if (memcmp(calc, trailer, kDigestBytes) != 0) return kDamaged;
+
+  // 2. the other app slot: the whole file, checksum and all
+  progress(Pass::WRITE, 0);
+  if (!sink.begin(size)) return sink.error();
+  const char *err = nullptr;
+  shown = 0;
+  for (uint32_t done = 0; done < size && !err;) {
+    const uint32_t n = size - done < chunk ? size - done : chunk;
+    if (!source.readAt(done, buf, n)) {
+      err = kReadError;
+    } else if (!sink.write(buf, n)) {
+      err = sink.error();
+    } else {
+      done += n;
+      const int pct = (int)((uint64_t)done * 100 / size);
+      if (pct >= shown + 2 || (done == size && pct != shown)) {
+        shown = pct;
+        progress(Pass::WRITE, pct);
+      }
+    }
+  }
+  if (!err && !sink.end()) err = sink.error();
+  if (err) sink.abort();
+  return err;
+}
+
 }  // namespace fwlogic

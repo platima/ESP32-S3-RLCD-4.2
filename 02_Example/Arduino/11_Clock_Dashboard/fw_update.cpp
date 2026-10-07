@@ -100,77 +100,47 @@ void say(FwShowFn show, UiFwKind kind, const char *what, const char *detail, int
   show(s);
 }
 
-int percentOf(uint32_t done, uint32_t total) { return total ? (int)((uint64_t)done * 100 / total) : 0; }
+// What fwlogic::installImage() works with on the clock: the file on the card, mbedTLS's SHA-256, and the
+// other app slot by way of the core's Update class.
+
+// Every read names its place in the file, so nothing depends on what was read before.
+struct CardFile {
+  int fd;
+  bool readAt(uint32_t offset, void *buf, uint32_t n) { return sdSeek(fd, offset) && sdRead(fd, buf, n) == (int)n; }
+};
+
+struct Sha256 {
+  mbedtls_sha256_context ctx;
+  Sha256() {
+    mbedtls_sha256_init(&ctx);
+    mbedtls_sha256_starts(&ctx, 0);
+  }
+  ~Sha256() { mbedtls_sha256_free(&ctx); }
+  void update(const uint8_t *p, uint32_t n) { mbedtls_sha256_update(&ctx, p, n); }
+  void finish(uint8_t *out) { mbedtls_sha256_finish(&ctx, out); }
+};
+
+// The Update class holds back the first bytes of the image until the end, so a half-written slot cannot
+// boot, and switches the boot slot only after the image has been verified.
+struct OtherSlot {
+  bool begin(uint32_t size) { return Update.begin(size, U_FLASH); }
+  bool write(uint8_t *p, uint32_t n) { return Update.write(p, n) == n; }
+  bool end() { return Update.end(); }
+  const char *error() { return Update.errorString(); }
+  void abort() { Update.abort(); }
+};
 
 // Checks the whole file against the SHA-256 at its end, then writes it to the other app slot.  Returns
 // nullptr when the new firmware is in place, else a short reason.
 const char *installFrom(int fd, uint32_t size, const char *detail, FwShowFn show) {
   uint8_t *buf = (uint8_t *)malloc(kChunk);
   if (!buf) return "Out of memory";
-  const char *err = nullptr;
-
-  // 1. the file against its own checksum: nothing is written until the whole copy is known to be good
-  say(show, FW_BUSY, "Checking the file", detail, 0, true);
-  mbedtls_sha256_context sha;
-  mbedtls_sha256_init(&sha);
-  mbedtls_sha256_starts(&sha, 0);
-  const uint32_t body = size - fwlogic::kDigestBytes;
-  uint32_t done = 0;
-  int shown = 0;
-  while (!err && done < body) {
-    const uint32_t n = body - done < kChunk ? body - done : kChunk;
-    if (sdRead(fd, buf, n) != (int)n) {
-      err = "Cannot read the file (card error)";
-      break;
-    }
-    mbedtls_sha256_update(&sha, buf, n);
-    done += n;
-    const int pct = percentOf(done, body);
-    if (pct >= shown + 4) {
-      shown = pct;
-      say(show, FW_BUSY, "Checking the file", detail, pct, true);
-    }
-  }
-  uint8_t calc[fwlogic::kDigestBytes], trailer[fwlogic::kDigestBytes];
-  mbedtls_sha256_finish(&sha, calc);
-  mbedtls_sha256_free(&sha);
-  if (!err && sdRead(fd, trailer, sizeof trailer) != (int)sizeof trailer) err = "Cannot read the file (card error)";
-  if (!err && memcmp(calc, trailer, sizeof calc) != 0) err = "The file is damaged: copy it again";
-  if (!err && !sdSeek(fd, 0)) err = "Cannot read the file (card error)";
-  if (err) {
-    free(buf);
-    return err;
-  }
-
-  // 2. the other app slot.  The Update class holds back the first 16 bytes until the end, so a half-written
-  // slot cannot boot, and switches the boot slot only after the image has been verified.
-  say(show, FW_BUSY, "Installing the new firmware", detail, 0, true);
-  if (!Update.begin(size, U_FLASH)) {
-    err = Update.errorString();
-    free(buf);
-    return err;
-  }
-  done = 0;
-  shown = 0;
-  while (done < size) {
-    const uint32_t n = size - done < kChunk ? size - done : kChunk;
-    if (sdRead(fd, buf, n) != (int)n) {
-      err = "Cannot read the file (card error)";
-      break;
-    }
-    if (Update.write(buf, n) != n) {
-      err = Update.errorString();
-      break;
-    }
-    done += n;
-    const int pct = percentOf(done, size);
-    if (pct >= shown + 2) {
-      shown = pct;
-      say(show, FW_BUSY, "Installing the new firmware", detail, pct, true);
-    }
-  }
-  if (!err && !Update.end()) err = Update.errorString();
-  if (err) Update.abort();
+  CardFile file{fd};
+  Sha256 sha;
+  OtherSlot slot;
+  const char *err = fwlogic::installImage(file, size, sha, slot, buf, (uint32_t)kChunk, [&](fwlogic::Pass pass, int percent) {
+    say(show, FW_BUSY, pass == fwlogic::Pass::CHECK ? "Checking the file" : "Installing the new firmware", detail, percent, true);
+  });
   free(buf);
   return err;
 }
@@ -228,7 +198,7 @@ void fwUpdateFromCard(FwShowFn show) {
     snprintf(size, sizeof size, "%.2f MB", (double)s_size / 1048576.0);
     snprintf(detail, sizeof detail, "%s, %s", s_name, size);
     fd = sdOpen(s_name);
-    if (fd < 0 || sdRead(fd, in.head, fwlogic::kHeadBytes) != (int)fwlogic::kHeadBytes) {
+    if (fd < 0 || !CardFile{fd}.readAt(0, in.head, (uint32_t)fwlogic::kHeadBytes)) {
       // a file shorter than the header is inspected as it is: the head stays zero and "too small" is the verdict
       if (fd < 0 || s_size >= fwlogic::kHeadBytes) problem = "Cannot read the firmware file";
     }

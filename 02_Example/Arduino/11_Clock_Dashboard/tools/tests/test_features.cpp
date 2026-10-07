@@ -2258,6 +2258,254 @@ void testFirmwareLogic() {
 // a card: it must be exactly what the clock writes to a card with none.  Regenerate it with
 //   ./build/test_features --write-example
 // ===========================================================================
+// Firmware update: the two passes over the file (fwlogic::installImage), with a made-up file and flash
+// ===========================================================================
+namespace fwtest {
+
+// A file in memory.  A read that reaches past its end fails, as it does on the card.
+struct MemFile {
+  std::vector<uint8_t> data;
+  long failAt = -1;    // a read that covers this place in the file fails (a card error)
+  int failOnRead = 0;  // ... or the read with this number does (1 = the first)
+  int reads = 0;
+  bool readAt(uint32_t offset, void *buf, uint32_t n) {
+    reads++;
+    if ((uint64_t)offset + n > data.size()) return false;
+    if (failOnRead && reads == failOnRead) return false;
+    if (failAt >= 0 && (uint32_t)failAt >= offset && (uint32_t)failAt < offset + n) return false;
+    memcpy(buf, data.data() + offset, n);
+    return true;
+  }
+};
+
+// The file as the first version of the updater read it: "whatever comes next", from wherever the last read
+// left off.  The place that is asked for is ignored.
+struct NextBytesFile {
+  std::vector<uint8_t> data;
+  size_t pos = 0;
+  bool readAt(uint32_t, void *buf, uint32_t n) {
+    if (pos + n > data.size()) return false;
+    memcpy(buf, data.data() + pos, n);
+    pos += n;
+    return true;
+  }
+};
+
+// A stand-in for SHA-256: 32 bytes that depend on every byte and on where it stands.
+struct ToyHash {
+  uint64_t h[4] = {0x9E3779B97F4A7C15ull, 0xC2B2AE3D27D4EB4Full, 0x165667B19E3779F9ull, 0x27D4EB2F165667C5ull};
+  uint64_t count = 0;
+  void update(const uint8_t *p, uint32_t n) {
+    for (uint32_t i = 0; i < n; i++) {
+      const uint64_t v = (uint64_t)p[i] + 1 + 257 * count++;
+      for (int k = 0; k < 4; k++) h[k] = (h[k] ^ (v * (uint64_t)(2 * k + 3))) * 0x100000001B3ull + (h[(k + 1) & 3] >> 7);
+    }
+  }
+  void finish(uint8_t *out) {
+    for (int k = 0; k < 4; k++)
+      for (int b = 0; b < 8; b++) out[8 * k + b] = (uint8_t)(h[k] >> (8 * b));
+  }
+};
+
+// The other app slot.
+struct FakeSlot {
+  std::vector<uint8_t> written;
+  bool began = false, ended = false, aborted = false;
+  uint32_t beginSize = 0;
+  int readsBeforeBegin = -1;  // how many reads the file had seen when the writing began
+  const int *fileReads = nullptr;
+  bool failBegin = false, failEnd = false;
+  long failWriteAt = -1;  // the write that would take the slot past this many bytes fails
+  bool begin(uint32_t size) {
+    began = true;
+    beginSize = size;
+    if (fileReads) readsBeforeBegin = *fileReads;
+    return !failBegin;
+  }
+  bool write(uint8_t *p, uint32_t n) {
+    if (failWriteAt >= 0 && (long)(written.size() + n) > failWriteAt) return false;
+    written.insert(written.end(), p, p + n);
+    return true;
+  }
+  bool end() {
+    ended = true;
+    return !failEnd;
+  }
+  const char *error() { return "flash trouble"; }
+  void abort() { aborted = true; }
+};
+
+// A firmware file of `bodyBytes` and the 32 bytes of checksum that follow them.
+std::vector<uint8_t> makeImage(size_t bodyBytes, uint32_t seed) {
+  std::vector<uint8_t> f(bodyBytes + fwlogic::kDigestBytes);
+  uint32_t x = seed * 2654435761u + 1;
+  for (size_t i = 0; i < bodyBytes; i++) {
+    x = x * 1664525u + 1013904223u;
+    f[i] = (uint8_t)(x >> 24);
+  }
+  ToyHash h;
+  h.update(f.data(), (uint32_t)bodyBytes);
+  h.finish(f.data() + bodyBytes);
+  return f;
+}
+
+typedef std::vector<std::pair<int, int>> Progress;  // (pass, percent), in the order reported
+
+template <class File>
+const char *install(File &file, FakeSlot &slot, uint32_t size, uint32_t chunk, Progress *progress = nullptr) {
+  static std::vector<uint8_t> buf(16384);
+  ToyHash hash;
+  return fwlogic::installImage(file, size, hash, slot, buf.data(), chunk, [&](fwlogic::Pass pass, int percent) {
+    if (progress) progress->push_back({(int)pass, percent});
+  });
+}
+
+}  // namespace fwtest
+
+void testFirmwareInstall() {
+  section("firmware update: the two passes over the file");
+  using namespace fwlogic;
+  using namespace fwtest;
+
+  // a good file goes into the slot whole, checksum and all, whatever its size and the size of the reads;
+  // and not a byte is written before every byte has been read and checked
+  int runs = 0, wrong = 0;
+  for (size_t body : {(size_t)1, (size_t)31, (size_t)32, (size_t)33, (size_t)4095, (size_t)4096, (size_t)4097, (size_t)150001}) {
+    for (uint32_t chunk : {7u, 512u, 4096u, 8192u}) {
+      MemFile file;
+      file.data = makeImage(body, (uint32_t)(body + chunk));
+      FakeSlot slot;
+      slot.fileReads = &file.reads;
+      const uint32_t size = (uint32_t)file.data.size();
+      Progress prog;
+      const char *err = install(file, slot, size, chunk, &prog);
+      runs++;
+      const int checkReads = (int)((body + chunk - 1) / chunk) + 1;  // the body in pieces, and the checksum
+      bool ok = err == nullptr && slot.began && slot.ended && !slot.aborted && slot.beginSize == size && slot.written == file.data;
+      ok = ok && slot.readsBeforeBegin == checkReads;
+      // the progress: the check from 0 to 100, then the writing from 0 to 100, never backwards
+      ok = ok && prog.size() >= 4 && prog.front() == std::make_pair((int)Pass::CHECK, 0) && prog.back() == std::make_pair((int)Pass::WRITE, 100);
+      int lastPass = (int)Pass::CHECK, lastPct = 0, checkEnd = -1;
+      for (const auto &p : prog) {
+        if (p.first != lastPass) {
+          if (p.first != (int)Pass::WRITE || p.second != 0) ok = false;  // (the writing starts at 0, and nothing goes back to checking)
+          checkEnd = lastPct;
+          lastPass = p.first;
+          lastPct = 0;
+        }
+        if (p.second < lastPct || p.second > 100) ok = false;
+        lastPct = p.second;
+      }
+      ok = ok && checkEnd == 100;
+      if (!ok) {
+        if (wrong++ < 3) printf("  body %u, reads of %u: err '%s', wrote %u of %u, %d reads before writing (want %d)\n", (unsigned)body, (unsigned)chunk,
+                                err ? err : "none", (unsigned)slot.written.size(), (unsigned)size, slot.readsBeforeBegin, checkReads);
+      }
+    }
+  }
+  CHECK(runs == 32 && wrong == 0);
+
+  // what the clock did on the day it was first tried on a real card: the caller had read the 208 bytes of the
+  // header for a look, and the check then read "what comes next".  208 bytes off, it came up short at the very
+  // end of every file: "Cannot read the file (card error)" at what looked like 100 %.  Every read now names
+  // its place; a file that ignores the place (as that code in effect did) is seen to fail in just that way.
+  {
+    NextBytesFile old;
+    old.data = makeImage(150001, 7);
+    old.pos = kHeadBytes;
+    FakeSlot slot;
+    Progress prog;
+    const char *err = install(old, slot, (uint32_t)old.data.size(), 4096, &prog);
+    CHECK(err != nullptr && !strcmp(err, kReadError) && !slot.began && slot.written.empty());
+    CHECK(!prog.empty() && prog.back().first == (int)Pass::CHECK && prog.back().second >= 96);  // the bar was nearly full
+    // ... and reading "what comes next" from the start gets through the check and then has nothing left to write
+    NextBytesFile fromStart;
+    fromStart.data = makeImage(150001, 7);
+    FakeSlot slot2;
+    err = install(fromStart, slot2, (uint32_t)fromStart.data.size(), 4096);
+    CHECK(err != nullptr && !strcmp(err, kReadError) && slot2.began && slot2.aborted && !slot2.ended && slot2.written.empty());
+    // the same file read by place is fine
+    MemFile good;
+    good.data = makeImage(150001, 7);
+    FakeSlot slot3;
+    CHECK(install(good, slot3, (uint32_t)good.data.size(), 4096) == nullptr && slot3.written == good.data);
+  }
+
+  // a damaged copy: one bit anywhere in the file, the checksum included, and nothing is written
+  for (size_t at : {(size_t)0, (size_t)208, (size_t)75000, (size_t)150000, (size_t)150001, (size_t)150032}) {
+    MemFile file;
+    file.data = makeImage(150001, 3);
+    file.data[at] ^= 0x10;
+    FakeSlot slot;
+    const char *err = install(file, slot, (uint32_t)file.data.size(), 4096);
+    if (!err || strcmp(err, kDamaged) != 0) printf("  a flipped bit at %u gave '%s'\n", (unsigned)at, err ? err : "none");
+    CHECK(err != nullptr && !strcmp(err, kDamaged) && !slot.began && slot.written.empty());
+  }
+
+  // a copy that was cut short (the card was pulled while Windows wrote it): shorter than its size says
+  for (size_t cut : {(size_t)1, (size_t)31, (size_t)32, (size_t)33, (size_t)5000}) {
+    MemFile file;
+    file.data = makeImage(150001, 4);
+    const uint32_t size = (uint32_t)file.data.size();
+    file.data.resize(file.data.size() - cut);
+    FakeSlot slot;
+    const char *err = install(file, slot, size, 4096);
+    CHECK(err != nullptr && !strcmp(err, kReadError) && !slot.began);
+  }
+
+  // a card error while checking, anywhere: nothing is written
+  for (long at : {0L, 4096L, 149999L, 150001L, 150032L}) {
+    MemFile file;
+    file.data = makeImage(150001, 5);
+    file.failAt = at;
+    FakeSlot slot;
+    const char *err = install(file, slot, (uint32_t)file.data.size(), 4096);
+    CHECK(err != nullptr && !strcmp(err, kReadError) && !slot.began && slot.written.empty());
+  }
+  // a card error while writing (the check went through): the half-written slot is given up
+  {
+    MemFile file;
+    file.data = makeImage(150001, 6);
+    const int checkReads = (150001 + 4095) / 4096 + 1;
+    file.failOnRead = checkReads + 5;  // the fifth read of the second pass
+    FakeSlot slot;
+    const char *err = install(file, slot, (uint32_t)file.data.size(), 4096);
+    CHECK(err != nullptr && !strcmp(err, kReadError) && slot.began && slot.aborted && !slot.ended);
+    CHECK(slot.written.size() == 4u * 4096u);
+  }
+  // the flash says no: at the start (nothing to give up), in the middle, at the end
+  {
+    MemFile file;
+    file.data = makeImage(150001, 8);
+    const uint32_t size = (uint32_t)file.data.size();
+    FakeSlot a;
+    a.failBegin = true;
+    const char *err = install(file, a, size, 4096);
+    CHECK(err != nullptr && !strcmp(err, "flash trouble") && a.written.empty() && !a.aborted && !a.ended);
+    FakeSlot b;
+    b.failWriteAt = 20000;
+    err = install(file, b, size, 4096);
+    CHECK(err != nullptr && !strcmp(err, "flash trouble") && b.aborted && !b.ended && b.written.size() == 4u * 4096u);
+    FakeSlot c;
+    c.failEnd = true;
+    err = install(file, c, size, 4096);
+    CHECK(err != nullptr && !strcmp(err, "flash trouble") && c.aborted && c.written == file.data);
+  }
+  // no file to speak of, or reads of no size: refused before anything is read
+  {
+    MemFile file;
+    file.data = makeImage(1, 9);
+    FakeSlot slot;
+    const char *small = install(file, slot, 32, 4096);
+    CHECK(small != nullptr && !strcmp(small, kTooSmall) && file.reads == 0);
+    const char *zero = install(file, slot, 0, 4096);
+    CHECK(zero != nullptr && !strcmp(zero, kTooSmall));
+    const char *noChunk = install(file, slot, (uint32_t)file.data.size(), 0);
+    CHECK(noChunk != nullptr && !strcmp(noChunk, kTooSmall) && !slot.began);
+  }
+}
+
+// ===========================================================================
 // What is on an SD card that would not mount (sd_layout.h)
 // ===========================================================================
 namespace sdtest {
@@ -2506,6 +2754,7 @@ int main(int argc, char **argv) {
   testWifiPick();
   testWifiPickDay();
   testFirmwareLogic();
+  testFirmwareInstall();
   testSdLayout();
   testSettingsFuzz();
 

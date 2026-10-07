@@ -746,6 +746,7 @@ down, no statement about its state after power-on was found, which is why both a
 | White text on a black screen | Hold BOOT for a second (remembered), or set `DISPLAY_INK_IS_BLACK 0` in `config.h`. The default follows Waveshare's LVGL port and the ESPHome ST7305 driver (a set bit is white), so this should not be needed |
 | Stuck on *Connecting to WiFi...* | Wrong name or password, or a 5 GHz-only network. With a backup network set the clock alternates between the two every 20 seconds, so check both |
 | *Too big (the .merged.bin? use the .ino.bin)* on the firmware screen | The card holds the `….merged.bin` that the IDE exports next to the real firmware; copy `11_Clock_Dashboard.ino.bin` instead |
+| *Cannot read the file (card error)* on the firmware screen, with the bar almost full | If it happens on every file: the firmware on the clock is a build from before 7 October 2026, whose updater checked the file from the wrong place. Nothing was written. Upload the current build once over USB; from then on the card works. Otherwise it is what it says: copy the file again, or try another card |
 | *This build was installed from the card before* | The card still holds a file the clock installed (and the firmware has since changed). Build again (every build is different), or type `fwforget` in the serial console |
 | The Info page says *the last SD card update was rolled back* | The new firmware reset within its first minute, so the bootloader went back to the old one. Watch the new build's log over USB, fix it and try again |
 | The Info page says *(backup)* | The main network could not be joined (or was out of range). The clock looks for it every 10 minutes and goes back by itself, see [A backup network](#a-backup-network) |
@@ -796,10 +797,10 @@ minutes wake it), `reboot`.
 
 Written and tested on a PC (and compiled), never run on the real board:
 
-* reading and writing the SD card (the mount follows the repo's `06_SD_Card` example). On the board a card has been
-  recognised and turned away (it had a GUID partition table), so the slot and its wiring work; a file system being
-  mounted, a file read or written, and the look at a refused card's first sector that names the reason have not been
-  seen there yet. How long the clock takes to notice that no card is in the slot is unknown;
+* writing to the SD card (the example settings file, the rename of an installed firmware file), and the look at a
+  refused card's first sector that names the reason. Seen on the board: a card with a GUID partition table was turned
+  away, and a FAT32 card was mounted and a 1.5 MB firmware file found on it and read from end to end, so the slot, its
+  wiring and reading work. How long the clock takes to notice that no card is in the slot is unknown;
 * the deep-sleep shutdown: the pins held through the sleep, the wake-up by timer and by KEY, the 3 second
   override, and what the sleeping board draws (`sleeptest` in the serial console tries it without a flat battery);
 * a `cpu_mhz` change from the SD card file while the display is already running (the display driver has to let go of the
@@ -808,9 +809,12 @@ Written and tested on a PC (and compiled), never run on the real board:
 * the clock drift measurement over real NTP syncs;
 * the backup network on the real radio: the switch when the main network cannot be joined, and the scan while connected
   that finds the main network again (the choice of network is tested on a PC, the WiFi calls are not);
-* the firmware update from the SD card: reading the file, writing the other app slot, the switch and the restart, the trial
-  minute and the rollback (what to do with a file is tested on a PC against the header of a real exported build; the flash
-  writing and the bootloader are not);
+* the firmware update from the SD card past the check of the file: writing the other app slot, the switch and the
+  restart, the trial minute and the rollback. The first try on the board found the file, read it, and then failed on a
+  mistake in the updater itself (it checked the file from the wrong place and ran out of it at the end). That is fixed,
+  and the two passes over the file now run on a PC against a made-up file and flash, the mistake included; what to do
+  with a file is tested against the header of a real exported build. The flash writing and the bootloader are not. **A
+  clock that runs a build from before that fix cannot be updated from the card: it needs one upload over USB;**
 * the new screens on the real panel (the renders are exact, the panel is not: its contrast and refresh are not modelled);
 * a built-in default that is refused (a typo in `secrets.h`) on the screen: the banner at start-up and the rows on the
   *Power and settings* page. Which values are refused and what the message says is tested on a PC; showing it uses the
@@ -857,7 +861,7 @@ Written and tested on a PC (and compiled), never run on the real board:
 | `battery_est.h`, `low_battery.h` | Runtime left; when to shut down and when to start again |
 | `drift.h`, `moon.h`, `datefmt.h` | Clock accuracy measurement, moon phase and its glyph, date formats |
 | `wifi_pick.h` | Which WiFi network to try next (main, backup) and when to look for the main one again |
-| `fw_logic.h`, `fw_update.h/.cpp` | Firmware update from the SD card: which file is accepted (pure logic) and the card, flash and trial minute |
+| `fw_logic.h`, `fw_update.h/.cpp` | Firmware update from the SD card: which file is accepted and the two passes over it, check then write (pure logic, host-tested), and the card, flash and trial minute |
 | `frame_plan.h` | When to draw the coming second and when to send it |
 | `ST7305_U8g2.*` | Display driver, derived from `10_U8G2_Test` with an inversion option |
 | `app_state.*`, `app_model.h` | Data shared between the two cores |
