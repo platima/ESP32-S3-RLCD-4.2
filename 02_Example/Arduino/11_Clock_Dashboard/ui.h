@@ -22,3 +22,7 @@ void uiDrawBatteryEmpty(u8g2_t *u8g2, float volts, float restartVolts, bool offe
 
 // The firmware-update screen: a chip, a heading, what is going on, a progress bar and the file.
 void uiDrawFirmwareUpdate(u8g2_t *u8g2, const UiFwScreen &screen);
+
+// A turning cube with copies of itself receding inside it, `elapsedMs` after it began (white on black, the
+// whole screen).  The caller sends the buffer.
+void uiDrawInfinityCube(u8g2_t *u8g2, uint32_t elapsedMs);

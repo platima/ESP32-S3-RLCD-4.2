@@ -62,6 +62,11 @@ static Preferences s_uiPrefs;  // namespace "ui": remembers the screen polarity 
 static ClickDetector s_key(KEY_MULTI_CLICK_GAP_MS, KEY_LONG_PRESS_MS);
 static ClickDetector s_boot(KEY_MULTI_CLICK_GAP_MS, BOOT_LONG_PRESS_MS);
 static HoldRelease s_restartHold(KEY_RESTART_HOLD_MS);  // KEY held for five seconds, then let go: restart
+// KEY and BOOT held down together for ten seconds: the cube (cubeFrame).  It is in no legend and no manual.
+static const uint32_t kCubeHoldMs = 10000, kCubeMaxMs = 60000;
+static ChordHold s_bothHeld(kCubeHoldMs, KEY_MULTI_CLICK_GAP_MS + 200);
+static bool s_cubeOn = false;
+static uint32_t s_cubeStartMs = 0;
 static bool s_restartAsked = false;                     // ... which loop() then does
 
 static UiPage s_page = PAGE_DASHBOARD;
@@ -207,8 +212,15 @@ static void handleBoot(ClickEvent e) {
   s_forceRedraw = true;
 }
 
+static void cubeEnd() {
+  s_cubeOn = false;
+  s_forceRedraw = true;  // the clock again, at once
+}
+
 static void pollButtons(uint32_t nowMs) {
   bool active = false;
+  // the two buttons are down together (or were a moment ago): what each of them reports does not count
+  const bool muted = s_bothHeld.muted();
   if (buttonEdgesOn()) {
     // With an idle clock: what the interrupts recorded while the loop was busy drawing, replayed in order,
     // so that a tap which began and ended inside a slow frame still counts (button_edges.h).
@@ -217,12 +229,12 @@ static void pollButtons(uint32_t nowMs) {
     while (buttonEdgeTake(BUTTON_KEY, &down, &at)) {
       active = true;
       const ClickEvent e = s_key.edge(down, at);
-      if (e != CLICK_NONE) handleKey(e);
+      if (e != CLICK_NONE && !muted) handleKey(e);
     }
     while (buttonEdgeTake(BUTTON_BOOT, &down, &at)) {
       active = true;
       const ClickEvent e = s_boot.edge(down, at);
-      if (e != CLICK_NONE) handleBoot(e);
+      if (e != CLICK_NONE && !muted) handleBoot(e);
     }
     nowMs = millis();  // not earlier than what was just replayed
   }
@@ -233,8 +245,26 @@ static void pollButtons(uint32_t nowMs) {
   ClickEvent b = buttonEdgesOn() ? s_boot.edge(bootDown, nowMs) : s_boot.update(bootDown, nowMs);
   // a button is down, or was a moment ago: the answer is drawn at the working clock (cpu_idle_mhz)
   if (active || keyDown || bootDown || k != CLICK_NONE || b != CLICK_NONE) s_pokeUntilMs = (nowMs + clockpolicy::kPokeMs) | 1u;
-  if (k != CLICK_NONE) handleKey(k);
-  if (b != CLICK_NONE) handleBoot(b);
+  if (k != CLICK_NONE && !muted) handleKey(k);
+  if (b != CLICK_NONE && !muted) handleBoot(b);
+
+  // KEY and BOOT held down together for ten seconds: the cube.  While the two are down, and until both are up
+  // again, neither is a long press, a click or the hold that restarts the clock.
+  if (s_bothHeld.update(s_key.isDown(), s_boot.isDown(), nowMs) == ChordHold::FIRED && !s_cubeOn) {
+    s_cubeOn = true;
+    s_cubeStartMs = nowMs;
+  } else if (s_cubeOn && !s_bothHeld.muted() && (s_key.isDown() || s_boot.isDown())) {
+    s_bothHeld.mute();  // any button ends it, and that press is nothing else
+    cubeEnd();
+  }
+  if (s_bothHeld.muted()) {
+    s_restartHold.cancel();
+    if (!strcmp(s_toast, UI_TOAST_RESTART_HOLD)) {  // KEY was held long enough to restart, and then BOOT joined it
+      s_toast[0] = 0;
+      s_forceRedraw = true;
+    }
+    return;
+  }
 
   // KEY held for five seconds and then let go: a restart, which is when the clock reads the SD card (a settings
   // file, a firmware file).  It waits for the button to come up, because KEY held while the clock starts means
@@ -1296,6 +1326,22 @@ static void announceConfig() {
   cfgAnnounced();  // the count from the last start is for this banner only, whatever it said
 }
 
+// The cube that KEY and BOOT bring up when they are held down together for ten seconds: a frame of it, as
+// often as the loop comes round, until a button is pressed (pollButtons) or a minute is over.  Nothing of the
+// clock is drawn meanwhile; the battery is still read, because a gap in its readings would start the charge
+// detector afresh.
+static void cubeFrame(uint32_t nowMs) {
+  if ((uint32_t)(nowMs - s_cubeStartMs) >= kCubeMaxMs) {
+    cubeEnd();
+    return;
+  }
+  s_pokeUntilMs = (nowMs + clockpolicy::kPokeMs) | 1u;  // at the working clock, as after a button press (cpu_idle_mhz)
+  u8g2_ClearBuffer(s_u8g2);
+  uiDrawInfinityCube(s_u8g2, nowMs - s_cubeStartMs);
+  u8g2_SendBuffer(s_u8g2);
+  readSlowSensors(nowMs);
+}
+
 // ---------------------------------------------------------------------------
 // Arduino entry points
 // ---------------------------------------------------------------------------
@@ -1393,6 +1439,10 @@ void loop() {
   watchClock(tv);
   spotifySetPageShown(s_page == PAGE_NOW_PLAYING);  // wifi_mode = sync: the Now Playing page keeps the radio on
   serviceClock(nowMs, (int32_t)tv.tv_usec);
+  if (s_cubeOn) {  // (see cubeFrame)
+    cubeFrame(nowMs);
+    return;
+  }
 
 #if CLOCK_SWEEP_FPS > 0
   // A sweeping second hand: frames at a steady rate, nothing scheduled.

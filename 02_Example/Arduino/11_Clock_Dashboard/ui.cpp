@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "datefmt.h"
+#include "infinity_cube.h"
 #include "moon.h"
 #include "timeutil.h"
 #include "weather_codes.h"
@@ -1470,4 +1471,24 @@ void uiDrawFirmwareUpdate(u8g2_t *u, const UiFwScreen &s) {
   } else if (s.kind == FW_DONE) {
     txtC(u, UI_WIDTH / 2, 282, "On trial for its first minute: if it fails, the old one returns");
   }
+}
+
+// An infinity-mirror cube, in white lines on black: a cube that turns, with copies of itself falling away inside
+// it (infinity_cube.h has the geometry).  It is no page of the clock: the sketch shows it to whoever holds both
+// buttons down for long enough.
+void uiDrawInfinityCube(u8g2_t *u, uint32_t elapsedMs) {
+  static infcube::Line lines[infcube::kMaxLines];  // (not on the stack: 1.5 KB)
+  const int n = infcube::frame(elapsedMs, UI_WIDTH, UI_HEIGHT, lines, infcube::kMaxLines);
+  ink(u);
+  u8g2_DrawBox(u, 0, 0, UI_WIDTH, UI_HEIGHT);
+  paper(u);
+  for (int i = 0; i < n; i++) {
+    const infcube::Line &l = lines[i];
+    u8g2_DrawLine(u, l.x0, l.y0, l.x1, l.y1);
+    if (i < 12) {  // the cube itself in lines of two pixels, so that it stands out from what is inside it
+      u8g2_DrawLine(u, l.x0 + 1, l.y0, l.x1 + 1, l.y1);
+      u8g2_DrawLine(u, l.x0, l.y0 + 1, l.x1, l.y1 + 1);
+    }
+  }
+  ink(u);
 }

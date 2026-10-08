@@ -109,8 +109,56 @@ class HoldRelease {
   }
 
   bool armed() const { return armed_; }
+  // The hold has come to mean something else (a second button joined it): letting go will not fire.
+  void cancel() { armed_ = false; }
 
  private:
   uint32_t holdMs_;
   bool armed_ = false;
+};
+
+// Two buttons held down together for `holdMs`: "fired" once, while both are still down.  From the moment
+// both are down until both are up again, and for `quietMs` after that, the buttons' own gestures must not
+// count (muted()): each one's long press comes due long before the two together do, a hold that acts on
+// letting go would act, and two buttons let go are not two clicks.  The quiet time is for the click that a
+// detector reports a moment after its button came up.  mute() asks for the same silence around one press
+// that means something else.  Feed it the debounced states of the two ClickDetectors (isDown()).
+class ChordHold {
+ public:
+  enum Event : uint8_t { NONE = 0, FIRED };
+
+  ChordHold(uint32_t holdMs, uint32_t quietMs) : holdMs_(holdMs), quietMs_(quietMs) {}
+
+  Event update(bool aDown, bool bDown, uint32_t nowMs) {
+    const bool both = aDown && bDown;
+    if (both && !both_) {  // the two together, from now: one that was let go and pressed again starts the count afresh
+      sinceMs_ = nowMs;
+      fired_ = false;
+    }
+    both_ = both;
+    if (both) engaged_ = true;
+    if (engaged_ && !aDown && !bDown) {  // both are up again
+      engaged_ = false;
+      quiet_ = true;
+      quietSinceMs_ = nowMs;
+    }
+    if (quiet_ && (uint32_t)(nowMs - quietSinceMs_) >= quietMs_) quiet_ = false;
+    if (both && !fired_ && (uint32_t)(nowMs - sinceMs_) >= holdMs_) {
+      fired_ = true;
+      return FIRED;
+    }
+    return NONE;
+  }
+
+  bool muted() const { return engaged_ || quiet_; }
+  // What the buttons report does not count until they are up, and quiet, again.
+  void mute() { engaged_ = true; }
+
+ private:
+  uint32_t holdMs_, quietMs_;
+  bool both_ = false;     // the two are down together right now
+  bool fired_ = false;    // ... and that has been reported
+  bool engaged_ = false;  // they were, and not both have come up since (or mute() was asked for)
+  bool quiet_ = false;    // both came up a moment ago
+  uint32_t sinceMs_ = 0, quietSinceMs_ = 0;
 };

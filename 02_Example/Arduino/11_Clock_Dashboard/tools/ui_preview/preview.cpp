@@ -1143,6 +1143,71 @@ static int checkButtonHelp() {
   return bad;
 }
 
+// ---------------------------------------------------------------------------
+// The turning cube that both buttons bring up (ui.cpp, infinity_cube.h): white lines on black.  Whichever way
+// it has turned, and however far its copies have fallen in, it has to stay clear of the edges of the screen,
+// and it has to be a picture: neither nothing nor a white screen.
+// ---------------------------------------------------------------------------
+static int checkInfinityCube() {
+  int bad = 0;
+  const int kMargin = 8;
+  auto litOutside = [&]() {  // white pixels in the band of kMargin along the four edges
+    int n = 0;
+    for (int y = 0; y < UI_HEIGHT; y++)
+      for (int x = 0; x < UI_WIDTH; x++) {
+        const bool band = x < kMargin || x >= UI_WIDTH - kMargin || y < kMargin || y >= UI_HEIGHT - kMargin;
+        if (band && !inkAt(x, y)) n++;
+      }
+    return n;
+  };
+  int frames = 0, least = 1 << 30, most = 0, touching = 0, top = UI_HEIGHT, bottom = 0, dark = 0;
+  for (uint32_t ms = 0; ms < 180000; ms += 131, frames++) {  // three minutes of it: every turn of the cube, every stage of the fall
+    u8g2_ClearBuffer(g_u);
+    uiDrawInfinityCube(g_u, ms);
+    if (litOutside() > 0) touching++;
+    int lit = 0;
+    for (int y = 0; y < UI_HEIGHT; y++) {
+      bool row = false;
+      for (int x = 0; x < UI_WIDTH; x++)
+        if (!inkAt(x, y)) {
+          lit++;
+          row = true;
+        }
+      if (row && y < top) top = y;
+      if (row && y > bottom) bottom = y;
+    }
+    if (lit < least) least = lit;
+    if (lit > most) most = lit;
+    if (!inkAt(UI_WIDTH / 2, UI_HEIGHT / 2) && !inkAt(UI_WIDTH / 2 - 1, UI_HEIGHT / 2 - 1)) dark++;  // (the copies end in a point of light)
+  }
+  printf("infinity cube: %d frames, %d to %d white pixels of %d, rows %d to %d, %d touch the %d px margin\n", frames, least, most,
+         UI_WIDTH * UI_HEIGHT, top, bottom, touching, kMargin);
+  if (touching || least < 2000 || most > UI_WIDTH * UI_HEIGHT / 4 || top > 40 || bottom < UI_HEIGHT - 41) {
+    printf("  CUBE: it leaves the screen, fills it, or is too small to be seen\n");
+    bad++;
+  }
+  {  // negative control: a pixel in the margin is seen, and so is a frame with nothing in it
+    u8g2_ClearBuffer(g_u);
+    uiDrawInfinityCube(g_u, 0);
+    u8g2_SetDrawColor(g_u, 0);
+    u8g2_DrawPixel(g_u, kMargin - 1, UI_HEIGHT / 2);
+    u8g2_SetDrawColor(g_u, 1);
+    const int seen = litOutside();
+    u8g2_ClearBuffer(g_u);
+    u8g2_DrawBox(g_u, 0, 0, UI_WIDTH, UI_HEIGHT);
+    int lit = 0;
+    for (int y = 0; y < UI_HEIGHT; y++)
+      for (int x = 0; x < UI_WIDTH; x++) lit += !inkAt(x, y);
+    if (seen != 1 || lit != 0) {
+      printf("  CHECK IS BLIND: a white pixel in the margin counted %d, a black screen %d white pixels\n", seen, lit);
+      bad++;
+    } else {
+      printf("  negative control OK: a pixel in the margin is seen, a black screen has none\n");
+    }
+  }
+  return bad;
+}
+
 int main() {
   mkdir("out", 0755);
   g_u = hostDisplayInit();
@@ -1393,6 +1458,17 @@ int main() {
   bad += checkMoonGlyph();           // ...or the moon is drawn wrongly...
   bad += checkRainGlyph();           // ...or the rain drop is not a drop, or not where its number is...
   bad += checkFirmwareScreen();      // ...or the firmware-update screen's bar or text is off...
-  bad += checkButtonHelp();          // ...or the legend's button help or the restart banner does not fit
+  bad += checkButtonHelp();          // ...or the legend's button help or the restart banner does not fit...
+  bad += checkInfinityCube();        // ...or the cube leaves the screen
+
+  // the cube as a strip of frames (to_png.py, or any tool that reads PGM, makes a film of them)
+  for (int i = 0; i < 72; i++) {
+    u8g2_ClearBuffer(g_u);
+    uiDrawInfinityCube(g_u, (uint32_t)i * 85);
+    char path[64];
+    snprintf(path, sizeof path, "out/cube_%02d.pgm", i);
+    hostDumpPgm(path);
+  }
+  printf("rendered out/cube_00.pgm .. cube_71.pgm\n");
   return bad ? 1 : 0;
 }

@@ -17,6 +17,7 @@
 #include "../../calc.h"
 #include "../../charge.h"
 #include "../../frame_plan.h"
+#include "../../infinity_cube.h"
 #include "../../link_page.h"
 #include "../../spotify_parse.h"
 #include "../../timeutil.h"
@@ -1893,6 +1894,212 @@ static void testHoldRelease() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// The two buttons held down together for ten seconds, wired as the sketch wires them (pollButtons()): two
+// click detectors, the hold that restarts the clock, and the chord.  What matters most is what must NOT
+// happen while two buttons are held: KEY alone restarts the clock after five seconds, BOOT alone inverts the
+// screen after one.
+// ---------------------------------------------------------------------------
+namespace {
+struct Pad {
+  ClickDetector key{320, 800}, boot{320, 1000};
+  HoldRelease restart{5000};
+  ChordHold both{10000, 520};
+  bool cubeOn = false;
+  int keyClicks = 0, keyLongs = 0, bootClicks = 0, bootLongs = 0;  // what handleKey() / handleBoot() would be given
+  int armed = 0, restarts = 0, cubes = 0, ends = 0;
+  uint32_t cubeAt = 0;
+
+  void poll(bool k, bool b, uint32_t now) {
+    const bool muted = both.muted();
+    const ClickEvent ek = key.update(k, now), eb = boot.update(b, now);
+    if (ek != CLICK_NONE && !muted) (ek == CLICK_LONG ? keyLongs : keyClicks)++;
+    if (eb != CLICK_NONE && !muted) (eb == CLICK_LONG ? bootLongs : bootClicks)++;
+    if (both.update(key.isDown(), boot.isDown(), now) == ChordHold::FIRED && !cubeOn) {
+      cubeOn = true;
+      cubes++;
+      cubeAt = now;
+    } else if (cubeOn && !both.muted() && (key.isDown() || boot.isDown())) {
+      both.mute();
+      cubeOn = false;
+      ends++;
+    }
+    if (both.muted()) {
+      restart.cancel();
+      return;
+    }
+    switch (restart.update(key.isDown(), key.heldMs())) {
+      case HoldRelease::ARMED: armed++; break;
+      case HoldRelease::FIRED: restarts++; break;
+      default: break;
+    }
+  }
+  // Runs `ms` of it, polled every 4 ms, from `*t`; the two functions say whether each button is down at a time
+  // counted from `t0`.
+  template <class K, class B>
+  void run(uint32_t *t, uint32_t t0, uint32_t ms, K keyDown, B bootDown) {
+    for (const uint32_t end = *t + ms; (int32_t)(end - *t) > 0; *t += 4) poll(keyDown(*t - t0), bootDown(*t - t0), *t);
+  }
+  int events() const { return keyClicks + keyLongs + bootClicks + bootLongs; }
+};
+}  // namespace
+
+static void testChord() {
+  section("buttons: two held down together");
+  auto never = [](uint32_t) { return false; };
+  for (uint32_t t0 : {0u, 0xFFFFE000u}) {  // (the second: across the wrap of millis())
+    Pad p;
+    uint32_t t = t0;
+    // both down within 30 ms of each other, for 10.4 s; KEY comes up 80 ms before BOOT
+    auto key = [](uint32_t s) { return s >= 1000 && s < 11400; };
+    auto boot = [](uint32_t s) { return s >= 1030 && s < 11480; };
+    p.run(&t, t0, 10900, key, boot);
+    CHECK(p.cubes == 0);  // 9.9 s of the two together
+    p.run(&t, t0, 400, key, boot);
+    CHECK(p.cubes == 1 && p.cubeOn && p.cubeAt - t0 >= 11055 && p.cubeAt - t0 <= 11100);  // ten seconds after both were down
+    p.run(&t, t0, 3000, key, boot);  // let go, and wait
+    CHECK(p.cubes == 1 && p.cubeOn && p.ends == 0);
+    CHECK(p.events() == 0);                  // no long press of either (0.8 s, 1 s), no click
+    CHECK(p.armed == 0 && p.restarts == 0);  // and KEY's five seconds did not count: the clock does not restart
+
+    // a tap of BOOT ends it, and is not "next page"
+    const uint32_t t1 = t;
+    p.run(&t, t1, 2000, never, [](uint32_t s) { return s >= 200 && s < 300; });
+    CHECK(!p.cubeOn && p.ends == 1 && p.events() == 0 && p.cubes == 1);
+    // ... and after that the buttons are themselves again
+    const uint32_t t2 = t;
+    p.run(&t, t2, 2000, [](uint32_t s) { return s >= 200 && s < 300; }, [](uint32_t s) { return s >= 900 && s < 1000; });
+    CHECK(p.keyClicks == 1 && p.bootClicks == 1 && p.events() == 2);
+    const uint32_t t3 = t;
+    p.run(&t, t3, 8000, [](uint32_t s) { return s >= 200 && s < 5700; }, never);
+    CHECK(p.keyLongs == 1 && p.armed == 1 && p.restarts == 1);  // KEY alone for 5.5 s still restarts
+  }
+  {  // let go a little too early (9.6 s): nothing at all, and nothing afterwards
+    Pad p;
+    uint32_t t = 0;
+    p.run(&t, 0, 14000, [](uint32_t s) { return s >= 1000 && s < 10650; }, [](uint32_t s) { return s >= 1020 && s < 10620; });
+    CHECK(p.cubes == 0 && p.events() == 0 && p.armed == 0 && p.restarts == 0);
+  }
+  {  // KEY alone long enough to restart (the banner is up), then BOOT joins: letting go no longer restarts
+    Pad p;
+    uint32_t t = 0;
+    p.run(&t, 0, 12000, [](uint32_t s) { return s >= 1000 && s < 9000; }, [](uint32_t s) { return s >= 7000 && s < 8000; });
+    CHECK(p.armed == 1 && p.restarts == 0 && p.cubes == 0);
+    CHECK(p.keyLongs == 1 && p.bootLongs == 0 && p.keyClicks == 0 && p.bootClicks == 0);  // (KEY's own long press came before BOOT did)
+  }
+  {  // BOOT lets go for a moment in the middle: the ten seconds start again, and KEY alone meanwhile is nothing
+    Pad p;
+    uint32_t t = 0;
+    auto key = [](uint32_t s) { return s >= 1000 && s < 19000; };
+    auto boot = [](uint32_t s) { return (s >= 1000 && s < 7000) || (s >= 7300 && s < 19000); };
+    p.run(&t, 0, 16000, key, boot);
+    CHECK(p.cubes == 0 && p.armed == 0);  // 15 s of KEY, but never ten of the two together
+    p.run(&t, 0, 1400, key, boot);
+    CHECK(p.cubes == 1 && p.cubeAt >= 17325 && p.cubeAt <= 17370);  // ten seconds after BOOT came back
+    p.run(&t, 0, 4000, key, boot);
+    CHECK(p.events() == 0 && p.armed == 0 && p.restarts == 0);
+  }
+  {  // one after the other: KEY's long press is its own (nobody was holding BOOT yet), then the two count from BOOT
+    Pad p;
+    uint32_t t = 0;
+    auto key = [](uint32_t s) { return s >= 1000 && s < 15000; };
+    auto boot = [](uint32_t s) { return s >= 4000 && s < 15000; };
+    p.run(&t, 0, 13900, key, boot);
+    CHECK(p.keyLongs == 1 && p.cubes == 0 && p.armed == 0);  // (KEY has been down for 12.9 s: no restart banner)
+    p.run(&t, 0, 3000, key, boot);
+    CHECK(p.cubes == 1 && p.cubeAt >= 14025 && p.cubeAt <= 14070 && p.restarts == 0 && p.events() == 1);
+  }
+  {  // held on and on: it comes up once
+    Pad p;
+    uint32_t t = 0;
+    p.run(&t, 0, 45000, [](uint32_t s) { return s >= 1000; }, [](uint32_t s) { return s >= 1000; });
+    CHECK(p.cubes == 1 && p.cubeOn && p.ends == 0 && p.events() == 0);
+  }
+  {  // the pieces: not muted at rest; muted from the moment both are down until both are up and quiet again
+    ChordHold c(10000, 520);
+    CHECK(!c.muted());
+    CHECK(c.update(true, false, 100) == ChordHold::NONE && !c.muted());
+    CHECK(c.update(true, true, 200) == ChordHold::NONE && c.muted());
+    CHECK(c.update(true, false, 300) == ChordHold::NONE && c.muted());   // one is still down
+    CHECK(c.update(false, false, 400) == ChordHold::NONE && c.muted());  // both up: quiet for 520 ms
+    CHECK(c.update(false, false, 919) == ChordHold::NONE && c.muted());
+    CHECK(c.update(false, false, 920) == ChordHold::NONE && !c.muted());
+    c.mute();  // asked for with nothing down: over 520 ms later
+    CHECK(c.muted() && c.update(false, false, 1000) == ChordHold::NONE && c.muted());
+    CHECK(c.update(false, false, 1520) == ChordHold::NONE && !c.muted());
+    ChordHold d(10000, 520);  // held for half a minute: fired once, at ten seconds
+    int fired = 0;
+    uint32_t firedAt = 0;
+    for (uint32_t t = 0; t <= 30000; t += 4) {
+      if (d.update(true, true, t) == ChordHold::FIRED) {
+        fired++;
+        firedAt = t;
+      }
+    }
+    CHECK(fired == 1 && firedAt == 10000);
+    HoldRelease h(5000);
+    CHECK(h.update(true, 5000) == HoldRelease::ARMED && h.armed());
+    h.cancel();
+    CHECK(!h.armed() && h.update(false, 0) == HoldRelease::NONE);  // let go after a cancel: nothing fires
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The cube those two buttons bring up (infinity_cube.h): the geometry only.  That it stays on the screen is
+// measured on the rendered frames by the UI preview.
+// ---------------------------------------------------------------------------
+static void testInfinityCube() {
+  section("infinity cube");
+  using namespace infcube;
+  static Line l[kMaxLines + 8];
+  int least = 1 << 30, most = 0, outside = 0, offCorner = 0, tooShort = 0;
+  for (uint32_t ms = 0; ms < 600000; ms += 173) {
+    const int n = frame(ms, 400, 300, l, kMaxLines);
+    if (n < least) least = n;
+    if (n > most) most = n;
+    for (int i = 0; i < n; i++)
+      if (l[i].x0 < 8 || l[i].x0 > 391 || l[i].x1 < 8 || l[i].x1 > 391 || l[i].y0 < 8 || l[i].y0 > 291 || l[i].y1 < 8 || l[i].y1 > 291) outside++;
+    // the eight spokes (after the cube's twelve edges) each start on a corner of the cube
+    for (int i = 12; i < 20; i++) {
+      bool onCorner = false;
+      for (int e = 0; e < 12; e++)
+        onCorner = onCorner || (l[i].x0 == l[e].x0 && l[i].y0 == l[e].y0) || (l[i].x0 == l[e].x1 && l[i].y0 == l[e].y1);
+      if (!onCorner) offCorner++;
+    }
+    // and the cube is a cube of some size: its longest edge is a good part of the screen's height
+    int longest = 0;
+    for (int e = 0; e < 12; e++) {
+      const int dx = l[e].x1 - l[e].x0, dy = l[e].y1 - l[e].y0;
+      if (dx * dx + dy * dy > longest) longest = dx * dx + dy * dy;
+    }
+    if (longest < 120 * 120) tooShort++;
+  }
+  printf("  (%d to %d lines a frame, of %d at most)\n", least, most, kMaxLines);
+  CHECK(least >= 12 + 8 + 12 * 6 && most <= kMaxLines && (most - 20) % 12 == 0);
+  CHECK(outside == 0 && offCorner == 0 && tooShort == 0);
+  // the copies fall inwards without a jump: as one has shrunk into the place of the next, the next starts there
+  CHECK_NEAR(copyScale(0, 0.0f), 1.0, 1e-6);  // (the outermost copy starts on the cube itself)
+  for (int j = 0; j < kCopies - 1; j++) CHECK_NEAR(copyScale(j, 0.9999f), copyScale(j + 1, 0.0f), 1e-3);
+  CHECK(drift(0) == 0.0f && drift(kStepMs) == 0.0f && drift(kStepMs - 1) > 0.999f && drift(kStepMs / 2) == 0.5f);
+  for (int j = 1; j < kCopies; j++) CHECK(copyScale(j, 0.3f) < copyScale(j - 1, 0.3f));
+  // never more lines than there is room for
+  for (int cap : {0, 1, 12, 19, 20, 33}) {
+    Line small[40];
+    for (Line &x : small) x = {-7, -7, -7, -7};
+    const int n = frame(4321, 400, 300, small, cap);
+    CHECK(n == cap);  // (a whole picture is far more than any of these)
+    for (int i = cap; i < 40; i++) CHECK(small[i].x0 == -7);
+  }
+  // a small screen gets a small cube, not a clipped one
+  int outsideSmall = 0;
+  for (uint32_t ms = 0; ms < 60000; ms += 211) {
+    const int n = frame(ms, 128, 64, l, kMaxLines);
+    for (int i = 0; i < n; i++)
+      if (l[i].x0 < 0 || l[i].x0 > 127 || l[i].x1 < 0 || l[i].x1 > 127 || l[i].y0 < 0 || l[i].y0 > 63 || l[i].y1 < 0 || l[i].y1 > 63) outsideSmall++;
+  }
+  CHECK(outsideSmall == 0);
+}
+
 int main() {
   testCalendar();
   testTimeZones();
@@ -1908,6 +2115,8 @@ int main() {
   testButtons();
   testButtonEdges();
   testHoldRelease();
+  testChord();
+  testInfinityCube();
   printf("\n%d checks, %d failed\n", g_checks, g_failed);
   return g_failed ? 1 : 0;
 }
