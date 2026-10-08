@@ -4021,7 +4021,7 @@ void testPowerLogStatus() {
                     }
                     if (len > longest) {
                       longest = len;
-                      snprintf(longestText, sizeof longestText, "%s", rows[i]);
+                      snprintf(longestText, sizeof longestText, "%.*s", (int)(sizeof longestText - 1), rows[i]);  // (bounded: the compiler takes the two rows for one string)
                     }
                   }
                   if (!on && n == 1 && strncmp(rows[0], "off, ", 5) != 0) bad++;  // the log is off, and the row about its copy says so
