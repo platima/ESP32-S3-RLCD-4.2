@@ -1909,7 +1909,7 @@ struct Pad {
   bool cubeOn = false;
   int keyClicks = 0, keyLongs = 0, bootClicks = 0, bootLongs = 0;  // what handleKey() / handleBoot() would be given
   int armed = 0, restarts = 0, cubes = 0, ends = 0;
-  int turnedBack = 0, switched = 0;  // what the cube was given while it was up: KEY's clicks, BOOT's clicks
+  int shoved = 0, switched = 0;  // what the cube was given while it was up: KEY's clicks, BOOT's clicks
   uint32_t cubeAt = 0;
 
   // A gesture of KEY or BOOT: to the cube while it is up (a long press ends it), else to the button's own handler.
@@ -1924,7 +1924,7 @@ struct Pad {
       cubeOn = false;
       ends++;
     } else {
-      (isKey ? turnedBack : switched)++;
+      (isKey ? shoved : switched)++;
     }
   }
 
@@ -1976,13 +1976,13 @@ static void testChord() {
     CHECK(p.events() == 0);                  // no long press of either (0.8 s, 1 s), no click
     CHECK(p.armed == 0 && p.restarts == 0);  // and KEY's five seconds did not count: the clock does not restart
 
-    // while it is up a tap of BOOT is "the other cube", not "next page", and a tap of KEY "back the way it came"
+    // while it is up a tap of BOOT is "the other cube", not "next page", and a tap of KEY a shove, not "play"
     const uint32_t t1 = t;
     p.run(&t, t1, 2000, never, [](uint32_t s) { return s >= 200 && s < 300; });
-    CHECK(p.cubeOn && p.switched == 1 && p.turnedBack == 0 && p.events() == 0);
+    CHECK(p.cubeOn && p.switched == 1 && p.shoved == 0 && p.events() == 0);
     const uint32_t t1b = t;
     p.run(&t, t1b, 3000, [](uint32_t s) { return (s >= 200 && s < 300) || (s >= 1500 && s < 1600); }, never);
-    CHECK(p.cubeOn && p.switched == 1 && p.turnedBack == 2 && p.events() == 0 && p.ends == 0);
+    CHECK(p.cubeOn && p.switched == 1 && p.shoved == 2 && p.events() == 0 && p.ends == 0);
     // a long press of either button ends it, and is neither "refresh" nor "invert"; held on, it is still nothing
     const uint32_t t1c = t;
     p.run(&t, t1c, 4000, never, [](uint32_t s) { return s >= 200 && s < 3200; });
@@ -2179,6 +2179,64 @@ static void testInfinityCube() {
     tumble(60000.0f, 5, a);
     tumble(60250.0f, 5, b);
     for (int i = 0; i < 3; i++) CHECK(dot(a[i], b[i]) > 0.92f);
+  }
+  {  // a shove (KEY, while a cube is up): off at a set speed in some direction, dying away; the tumbling goes on under it
+    Shove a;
+    a.bump(0x12345678u);
+    CHECK_NEAR(sqrtf(a.rate[0] * a.rate[0] + a.rate[1] * a.rate[1] + a.rate[2] * a.rate[2]), kShoveRate, 1e-6);
+    CHECK(a.angle[0] == 0.0f && a.angle[1] == 0.0f && a.angle[2] == 0.0f);  // (it has not moved yet)
+    Shove b = a, first = a;
+    a.advance(3000.0f);
+    for (int i = 0; i < 300; i++) b.advance(10.0f);  // counted frame by frame it comes to the same
+    for (int i = 0; i < 3; i++) CHECK_NEAR(a.angle[i], b.angle[i], 2e-3);
+    // by then it has all but stopped, having turned the cube by its speed times the time it takes to fade
+    CHECK(sqrtf(a.rate[0] * a.rate[0] + a.rate[1] * a.rate[1] + a.rate[2] * a.rate[2]) < 0.01f * kShoveRate);
+    CHECK_NEAR(sqrtf(a.angle[0] * a.angle[0] + a.angle[1] * a.angle[1] + a.angle[2] * a.angle[2]), kShoveRate * kShoveFadeMs, 0.03);
+    for (int i = 0; i < 3; i++) CHECK(a.angle[i] * first.rate[i] >= 0.0f);  // ... the way it was shoved
+    first.advance(kShoveFadeMs);  // one such stretch on, a third of the speed is left
+    CHECK_NEAR(sqrtf(first.rate[0] * first.rate[0] + first.rate[1] * first.rate[1] + first.rate[2] * first.rate[2]), kShoveRate * 0.3679, 1e-5);
+    // it is something to see and no more than that: a good part of a turn, less than a whole one; still going
+    // after a sixth of a second, over within two
+    CHECK(kShoveRate * kShoveFadeMs > 1.0f && kShoveRate * kShoveFadeMs < 6.0f);
+    Shove seen;
+    seen.bump(0x12345678u);
+    seen.advance(150.0f);
+    CHECK(sqrtf(seen.rate[0] * seen.rate[0] + seen.rate[1] * seen.rate[1] + seen.rate[2] * seen.rate[2]) > 0.5f * kShoveRate);
+    seen.advance(1850.0f);
+    CHECK(sqrtf(seen.rate[0] * seen.rate[0] + seen.rate[1] * seen.rate[1] + seen.rate[2] * seen.rate[2]) < 0.05f * kShoveRate);
+    // the direction comes with the bits, and over many shoves it is every direction
+    float sum[3] = {0, 0, 0};
+    int alike = 0;
+    uint32_t r = 2463534242u;
+    Shove before;
+    before.bump(r);
+    for (int n = 0; n < 4000; n++) {
+      r ^= r << 13;
+      r ^= r >> 17;
+      r ^= r << 5;
+      Shove s;
+      s.bump(r);
+      for (int i = 0; i < 3; i++) sum[i] += s.rate[i] / kShoveRate;
+      if (s.rate[0] == before.rate[0] && s.rate[1] == before.rate[1]) alike++;
+      before = s;
+    }
+    CHECK(alike == 0 && fabsf(sum[0]) < 200 && fabsf(sum[1]) < 200 && fabsf(sum[2]) < 200);
+    Shove twice;  // two shoves the same way are twice the shove
+    twice.bump(77);
+    twice.bump(77);
+    CHECK_NEAR(sqrtf(twice.rate[0] * twice.rate[0] + twice.rate[1] * twice.rate[1] + twice.rate[2] * twice.rate[2]), 2 * kShoveRate, 1e-6);
+    Shove odd;  // (bits that are all nought are a direction too)
+    odd.bump(0);
+    CHECK_NEAR(sqrtf(odd.rate[0] * odd.rate[0] + odd.rate[1] * odd.rate[1] + odd.rate[2] * odd.rate[2]), kShoveRate, 1e-6);
+    // the cube with a shove in it: still three unit axes at right angles, and somewhere else than without
+    V3 plain[3], same[3], moved[3];
+    const float none[3] = {0, 0, 0}, some[3] = {0.7f, -1.1f, 2.0f};
+    tumble(1234.0f, 5, plain);
+    tumble(1234.0f, 5, none, same);
+    tumble(1234.0f, 5, some, moved);
+    CHECK(plain[0].x == same[0].x && plain[1].y == same[1].y && plain[2].z == same[2].z);
+    CHECK(fabsf(plain[0].x - moved[0].x) + fabsf(plain[1].y - moved[1].y) + fabsf(plain[2].z - moved[2].z) > 0.1f);
+    for (int i = 0; i < 3; i++) CHECK(fabsf(dot(moved[i], moved[i]) - 1.0f) < 1e-4f && fabsf(dot(moved[i], moved[(i + 1) % 3])) < 1e-4f);
   }
   // the further a reflection, the fainter, down to nothing
   CHECK(fade(1) == SOLID && fade(2) == FADE1 && fade(1000) == NONE);

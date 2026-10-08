@@ -29,7 +29,8 @@ void uiDrawFirmwareUpdate(u8g2_t *u8g2, const UiFwScreen &screen);
 struct UiCube {
   bool mirrors = false;    // which of the two
   uint32_t seed = 1;       // of the way it tumbles (and of where the sand lies to begin with): another one every showing
-  float turnMs = 0;        // how far along its tumbling it is, in milliseconds: counted down while it turns back
+  float turnMs = 0;        // how far along its tumbling it is, in milliseconds
+  float shove[3] = {0, 0, 0};  // what it has been shoved round by on top of that (infcube::Shove::angle)
   uint32_t elapsedMs = 0;  // since it came up; has to go up from call to call (the sand runs by it)
 };
 void uiDrawCube(u8g2_t *u8g2, const UiCube &cube);

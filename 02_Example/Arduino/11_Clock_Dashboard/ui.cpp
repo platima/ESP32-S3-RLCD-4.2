@@ -657,10 +657,29 @@ void drawStatusBar(u8g2_t *u, const UiModel &m) {
 // ---------------------------------------------------------------------------
 // Analog clock
 // ---------------------------------------------------------------------------
+// A ring two pixels wide whose outside is the circle of radius r: every pixel whose middle lies between r - 1.5
+// and r + 0.5 from the centre.  (Two circles drawn one inside the other, r and r - 1, cover the same band but
+// for single pixels here and there, where the two happen to round differently: on the panel they showed as
+// holes in the clock's outline.)
+void ring(u8g2_t *u, int cx, int cy, int r) {
+  const float outer2 = ((float)r + 0.5f) * ((float)r + 0.5f), inner2 = ((float)r - 1.5f) * ((float)r - 1.5f);
+  for (int dy = -r; dy <= r; dy++) {
+    const float d2 = (float)(dy * dy);
+    const int xo = (int)floorf(sqrtf(outer2 - d2));  // the last column of this row that is inside the outer edge
+    if (d2 >= inner2) {                               // above or below the hole: one run from side to side
+      u8g2_DrawHLine(u, cx - xo, cy + dy, 2 * xo + 1);
+      continue;
+    }
+    const int xi = (int)ceilf(sqrtf(inner2 - d2));  // the first column that is outside the inner edge
+    if (xi > xo) continue;
+    u8g2_DrawHLine(u, cx - xo, cy + dy, xo - xi + 1);
+    u8g2_DrawHLine(u, cx + xi, cy + dy, xo - xi + 1);
+  }
+}
+
 void drawAnalogClock(u8g2_t *u, int cx, int cy, int R, const UiModel &m) {
   ink(u);
-  u8g2_DrawCircle(u, cx, cy, R, U8G2_DRAW_ALL);
-  u8g2_DrawCircle(u, cx, cy, R - 1, U8G2_DRAW_ALL);
+  ring(u, cx, cy, R);
 
   // minute / hour ticks
   for (int i = 0; i < 60; i++) {
@@ -1545,7 +1564,7 @@ void uiDrawCube(u8g2_t *u, const UiCube &cube) {
   lastMs = cube.elapsedMs;
   lastSeed = cube.seed;
   infcube::V3 axis[3];
-  infcube::tumble(cube.turnMs, cube.seed, axis);
+  infcube::tumble(cube.turnMs, cube.seed, cube.shove, axis);
   sand.advance(cube.elapsedMs, axis);  // (the sand runs on while the mirrors are shown: it is the same cube)
   ink(u);
   u8g2_DrawBox(u, 0, 0, UI_WIDTH, UI_HEIGHT);

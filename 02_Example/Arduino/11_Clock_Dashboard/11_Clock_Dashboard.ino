@@ -38,6 +38,7 @@
 #include "console_policy.h"
 #include "frame_plan.h"
 #include "fw_update.h"
+#include "infinity_cube.h"
 #include "log.h"
 #include "low_battery.h"
 #include "moon.h"
@@ -63,13 +64,13 @@ static ClickDetector s_key(KEY_MULTI_CLICK_GAP_MS, KEY_LONG_PRESS_MS);
 static ClickDetector s_boot(KEY_MULTI_CLICK_GAP_MS, BOOT_LONG_PRESS_MS);
 static HoldRelease s_restartHold(KEY_RESTART_HOLD_MS);  // KEY held for five seconds, then let go: restart
 // KEY and BOOT held down together for ten seconds: a cube that tumbles (cubeFrame).  It is in no legend and no
-// manual.  While it is up, KEY turns it the other way round, BOOT shows the other of the two cubes, and a long
-// press of either (or two minutes with no button touched) brings the clock back.
+// manual.  While it is up, KEY gives it a shove in some direction, BOOT shows the other of the two cubes, and a
+// long press of either (or two minutes with no button touched) brings the clock back.
 static const uint32_t kCubeHoldMs = 10000, kCubeIdleMs = 120000;
 static ChordHold s_bothHeld(kCubeHoldMs, KEY_MULTI_CLICK_GAP_MS + 200);
 static bool s_cubeOn = false;
 static UiCube s_cube;       // which cube (it stays the one that was shown last), and how far it has tumbled
-static int s_cubeWay = 1;   // 1, or -1 while it turns back
+static infcube::Shove s_cubeShove;  // what KEY has done to it
 static uint32_t s_cubeStartMs = 0, s_cubeFrameMs = 0, s_cubeTouchMs = 0;
 static bool s_restartAsked = false;                     // ... which loop() then does
 
@@ -221,7 +222,7 @@ static void cubeBegin(uint32_t nowMs) {
   s_cube.seed = esp_random() | 1u;  // it tumbles another way every time
   s_cube.turnMs = 0;
   s_cube.elapsedMs = 0;
-  s_cubeWay = 1;
+  s_cubeShove = infcube::Shove();
   s_cubeStartMs = s_cubeFrameMs = s_cubeTouchMs = nowMs;
 }
 
@@ -238,7 +239,7 @@ static void cubeButton(bool key, ClickEvent e) {
   }
   s_cubeTouchMs = millis();
   if (key) {
-    s_cubeWay = -s_cubeWay;  // back the way it came
+    s_cubeShove.bump(esp_random());  // off in some direction, for a moment
   } else {
     s_cube.mirrors = !s_cube.mirrors;  // the other cube, where this one is
   }
@@ -1373,8 +1374,11 @@ static void cubeFrame(uint32_t nowMs) {
     return;
   }
   s_pokeUntilMs = (nowMs + clockpolicy::kPokeMs) | 1u;  // at the working clock, as after a button press (cpu_idle_mhz)
-  s_cube.turnMs += (float)s_cubeWay * (float)(uint32_t)(nowMs - s_cubeFrameMs);
+  const float dtMs = (float)(uint32_t)(nowMs - s_cubeFrameMs);
   s_cubeFrameMs = nowMs;
+  s_cube.turnMs += dtMs;
+  s_cubeShove.advance(dtMs);
+  for (int i = 0; i < 3; i++) s_cube.shove[i] = s_cubeShove.angle[i];
   s_cube.elapsedMs = nowMs - s_cubeStartMs;
   u8g2_ClearBuffer(s_u8g2);
   uiDrawCube(s_u8g2, s_cube);

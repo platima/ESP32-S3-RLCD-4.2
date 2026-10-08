@@ -1144,17 +1144,71 @@ static int checkButtonHelp() {
 }
 
 // ---------------------------------------------------------------------------
+// The outline of the analogue clock: a ring two pixels wide with no pixel missing.  It used to be two circles,
+// one inside the other, and wherever the two rounded differently a single pixel between them stayed white:
+// seen on the panel as holes in the outline.
+// ---------------------------------------------------------------------------
+static int checkClockRing() {
+  int bad = 0;
+  // white pixels well inside the band of the ring, and black ones just outside it
+  auto count = [&](int *holes, int *spill) {
+    *holes = *spill = 0;
+    for (int y = kClockCy - kClockR - 4; y <= kClockCy + kClockR + 4; y++) {
+      for (int x = kClockCx - kClockR - 4; x <= kClockCx + kClockR + 4; x++) {
+        const float d = sqrtf((float)((x - kClockCx) * (x - kClockCx) + (y - kClockCy) * (y - kClockCy)));
+        if (d >= (float)kClockR - 1.2f && d <= (float)kClockR + 0.2f && !inkAt(x, y)) (*holes)++;
+        if (d >= (float)kClockR + 1.2f && d <= (float)kClockR + 3.0f && inkAt(x, y)) (*spill)++;
+      }
+    }
+  };
+  int holes = 0, spill = 0, frames = 0;
+  for (int hour = 0; hour < 12; hour++) {  // (the hands never reach the ring; a few times of day all the same)
+    UiModel m = baseModel();
+    m.local.tm_hour = hour;
+    m.local.tm_min = hour * 5;
+    m.local.tm_sec = (hour * 7) % 60;
+    renderModel(m);
+    int h, s;
+    count(&h, &s);
+    holes += h;
+    spill += s;
+    frames++;
+  }
+  printf("clock outline: %d frames, %d pixels missing from the ring, %d outside it\n", frames, holes, spill);
+  if (holes || spill) {
+    printf("  CLOCK: the outline has holes in it, or ink beside it\n");
+    bad++;
+  }
+  {  // negative control: the two circles it used to be
+    u8g2_ClearBuffer(g_u);
+    ink(g_u);
+    u8g2_DrawCircle(g_u, kClockCx, kClockCy, kClockR, U8G2_DRAW_ALL);
+    u8g2_DrawCircle(g_u, kClockCx, kClockCy, kClockR - 1, U8G2_DRAW_ALL);
+    int oldHoles, oldSpill;
+    count(&oldHoles, &oldSpill);
+    if (oldHoles == 0) {
+      printf("  CHECK IS BLIND: drawn as two circles the outline shows no holes\n");
+      bad++;
+    } else {
+      printf("  negative control OK: drawn as two circles, %d pixels of the ring are missing\n", oldHoles);
+    }
+  }
+  return bad;
+}
+
+// ---------------------------------------------------------------------------
 // The turning cubes that both buttons bring up (ui.cpp; infinity_cube.h, sand_cube.h): white on black.  Whichever
 // way a cube has turned, it has to stay clear of the edges of the screen, and it has to be a picture: neither
 // nothing nor a white screen.
 // ---------------------------------------------------------------------------
 static uint32_t g_cubeSeed = 1;
-static void drawCube(bool mirrors, float turnMs, uint32_t elapsedMs) {
+static void drawCube(bool mirrors, float turnMs, uint32_t elapsedMs, const float *shove = nullptr) {
   UiCube c;
   c.mirrors = mirrors;
   c.seed = g_cubeSeed;
   c.turnMs = turnMs;
   c.elapsedMs = elapsedMs;
+  for (int i = 0; i < 3; i++) c.shove[i] = shove ? shove[i] : 0.0f;
   uiDrawCube(g_u, c);
 }
 static void drawMirrorCube(u8g2_t *, uint32_t ms) { drawCube(true, (float)ms, ms); }
@@ -1470,6 +1524,7 @@ int main() {
   bad += checkRainGlyph();           // ...or the rain drop is not a drop, or not where its number is...
   bad += checkFirmwareScreen();      // ...or the firmware-update screen's bar or text is off...
   bad += checkButtonHelp();          // ...or the legend's button help or the restart banner does not fit...
+  bad += checkClockRing();           // ...or the clock's outline has a hole in it...
   for (uint32_t seed : {20261008u, 7u}) {  // ...or a cube leaves the screen, whichever way it tumbles
     g_cubeSeed = seed;
     bad += checkCube("mirror cube", drawMirrorCube, 2000);
@@ -1477,16 +1532,22 @@ int main() {
   }
 
   // the cube as a strip of frames (to_png.py, or any tool that reads PGM, makes a film of them)
+  infcube::Shove shove;  // (a shove now and then, as KEY gives it)
   for (int i = 0; i < 72; i++) {
+    if (i == 30 || i == 52) shove.bump(0x2545F491u * (uint32_t)i);
+    shove.advance(85.0f);
     u8g2_ClearBuffer(g_u);
-    drawCube(true, (float)(i < 48 ? i : 96 - i) * 85.0f, (uint32_t)i * 85);  // (the last third: turning back)
+    drawCube(true, (float)i * 85.0f, (uint32_t)i * 85, shove.angle);
     char path[64];
     snprintf(path, sizeof path, "out/cube_%02d.pgm", i);
     hostDumpPgm(path);
   }
+  shove = infcube::Shove();
   for (int i = 0; i < 160; i++) {
+    if (i == 60 || i == 110) shove.bump(0x9E3779B9u * (uint32_t)i);
+    shove.advance(70.0f);
     u8g2_ClearBuffer(g_u);
-    drawCube(false, (float)(i < 110 ? i : 220 - i) * 70.0f, (uint32_t)i * 70);
+    drawCube(false, (float)i * 70.0f, (uint32_t)i * 70, shove.angle);
     char path[64];
     snprintf(path, sizeof path, "out/sand_%03d.pgm", i);
     hostDumpPgm(path);

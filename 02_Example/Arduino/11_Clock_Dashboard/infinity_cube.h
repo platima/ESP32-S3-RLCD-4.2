@@ -55,11 +55,12 @@ inline float dot(V3 a, V3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 inline V3 cross(V3 a, V3 b) { return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x}; }
 
 // How a cube tumbles: where its three axes point (x to the right, y up, z away from the eye) when it is
-// `turnMs` along its way.  It turns about all three axes at once, and on each of them now faster, now slower,
-// now the other way, by a slow rule of its own that `seed` picks: no two showings turn alike, and nothing ever
-// jerks.  The way is a function of turnMs alone, so a cube that is taken back along it (turnMs going down)
-// turns exactly the other way round.
-inline void tumble(float turnMs, uint32_t seed, V3 out[3]) {
+// `turnMs` along its way, and has been shoved round by `shove` on top of that (Shove::angle; null for none).
+// It turns about all three axes at once, and on each of them now faster, now slower, now the other way, by a
+// slow rule of its own that `seed` picks: no two showings turn alike, and nothing ever jerks.  Without a shove
+// the way is a function of turnMs alone, so a cube that is taken back along it (turnMs going down) turns
+// exactly the other way round.
+inline void tumble(float turnMs, uint32_t seed, const float shove[3], V3 out[3]) {
   // six phases out of the seed (a small generator: the same seed, the same tumble)
   float phase[6];
   uint32_t r = seed ? seed : 1;
@@ -71,13 +72,46 @@ inline void tumble(float turnMs, uint32_t seed, V3 out[3]) {
   }
   // each angle: a steady turn, and two slow swings on top of it that speed it up, hold it back and at times
   // turn it round (in radians, with turnMs in milliseconds: a swing takes 25 to 50 seconds)
-  const float yaw = 0.00030f * turnMs + 1.5f * sinf(0.00021f * turnMs + phase[0]) + 0.8f * sinf(0.00013f * turnMs + phase[1]);
-  const float pitch = 0.00022f * turnMs + 1.4f * sinf(0.00017f * turnMs + phase[2]) + 0.9f * sinf(0.00025f * turnMs + phase[3]);
-  const float roll = 0.00026f * turnMs + 1.3f * sinf(0.00019f * turnMs + phase[4]) + 0.9f * sinf(0.00015f * turnMs + phase[5]);
+  const float more[3] = {shove ? shove[0] : 0.0f, shove ? shove[1] : 0.0f, shove ? shove[2] : 0.0f};
+  const float yaw = more[0] + 0.00030f * turnMs + 1.5f * sinf(0.00021f * turnMs + phase[0]) + 0.8f * sinf(0.00013f * turnMs + phase[1]);
+  const float pitch = more[1] + 0.00022f * turnMs + 1.4f * sinf(0.00017f * turnMs + phase[2]) + 0.9f * sinf(0.00025f * turnMs + phase[3]);
+  const float roll = more[2] + 0.00026f * turnMs + 1.3f * sinf(0.00019f * turnMs + phase[4]) + 0.9f * sinf(0.00015f * turnMs + phase[5]);
   const float cy = cosf(yaw), sy = sinf(yaw), cp = cosf(pitch), sp = sinf(pitch), cr = cosf(roll), sr = sinf(roll);
   const V3 turned[3] = {{cy, sy * sp, -sy * cp}, {0, cp, sp}, {sy, -cy * sp, cy * cp}};  // about the upright axis, then tipped
   for (int i = 0; i < 3; i++) out[i] = {turned[i].x * cr - turned[i].y * sr, turned[i].x * sr + turned[i].y * cr, turned[i].z};  // then rolled
 }
+
+inline void tumble(float turnMs, uint32_t seed, V3 out[3]) { tumble(turnMs, seed, nullptr, out); }
+
+// A shove given to a tumbling cube: it spins off in some direction, fast at first, and that dies away in under
+// a second while the tumbling goes on underneath.  `angle` is what all the shoves so far have turned the cube
+// by, for tumble().
+const float kShoveRate = 0.0045f;   // radians a millisecond at the moment of the shove: 260 degrees a second
+const float kShoveFadeMs = 600.0f;  // ... falling to a third of what it was in every stretch of this long
+struct Shove {
+  float angle[3] = {0, 0, 0};
+  float rate[3] = {0, 0, 0};  // how fast the angles still grow, radians a millisecond
+
+  // One shove, in the direction that `random` (any 32 bits of chance) picks.
+  void bump(uint32_t random) {
+    float v[3], length2 = 0;
+    for (int i = 0; i < 3; i++) {
+      v[i] = (float)((random >> (10 * i)) & 1023u) - 511.5f;
+      length2 += v[i] * v[i];
+    }
+    const float scale = kShoveRate / sqrtf(length2);  // (never nought: the parts are halves)
+    for (int i = 0; i < 3; i++) rate[i] += v[i] * scale;
+  }
+
+  // `dtMs` later (the same whether it is counted in one go or frame by frame).
+  void advance(float dtMs) {
+    const float keep = expf(-dtMs / kShoveFadeMs);
+    for (int i = 0; i < 3; i++) {
+      angle[i] = fmodf(angle[i] + rate[i] * kShoveFadeMs * (1.0f - keep), 6.2831853f);
+      rate[i] *= keep;
+    }
+  }
+};
 
 // What can be seen through a face from the eye: the inside of the four planes through the eye and the face's edges.
 struct Window {
