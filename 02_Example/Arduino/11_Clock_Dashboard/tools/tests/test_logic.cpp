@@ -19,6 +19,7 @@
 #include "../../frame_plan.h"
 #include "../../infinity_cube.h"
 #include "../../link_page.h"
+#include "../../sand_cube.h"
 #include "../../spotify_parse.h"
 #include "../../timeutil.h"
 #include "../../util.h"
@@ -1895,8 +1896,8 @@ static void testHoldRelease() {
 }
 
 // ---------------------------------------------------------------------------
-// The two buttons held down together for ten seconds, wired as the sketch wires them (pollButtons()): two
-// click detectors, the hold that restarts the clock, and the chord.  What matters most is what must NOT
+// The two buttons held down together for ten seconds, wired as the sketch wires them (pollButtons(), onKey(),
+// onBoot(), cubeButton()): two click detectors, the hold that restarts the clock, and the chord.  What matters most is what must NOT
 // happen while two buttons are held: KEY alone restarts the clock after five seconds, BOOT alone inverts the
 // screen after one.
 // ---------------------------------------------------------------------------
@@ -1908,21 +1909,34 @@ struct Pad {
   bool cubeOn = false;
   int keyClicks = 0, keyLongs = 0, bootClicks = 0, bootLongs = 0;  // what handleKey() / handleBoot() would be given
   int armed = 0, restarts = 0, cubes = 0, ends = 0;
+  int turnedBack = 0, switched = 0;  // what the cube was given while it was up: KEY's clicks, BOOT's clicks
   uint32_t cubeAt = 0;
+
+  // A gesture of KEY or BOOT: to the cube while it is up (a long press ends it), else to the button's own handler.
+  void gesture(bool isKey, ClickEvent e) {
+    if (!cubeOn) {
+      if (isKey) {
+        (e == CLICK_LONG ? keyLongs : keyClicks)++;
+      } else {
+        (e == CLICK_LONG ? bootLongs : bootClicks)++;
+      }
+    } else if (e == CLICK_LONG) {
+      cubeOn = false;
+      ends++;
+    } else {
+      (isKey ? turnedBack : switched)++;
+    }
+  }
 
   void poll(bool k, bool b, uint32_t now) {
     const bool muted = both.muted();
     const ClickEvent ek = key.update(k, now), eb = boot.update(b, now);
-    if (ek != CLICK_NONE && !muted) (ek == CLICK_LONG ? keyLongs : keyClicks)++;
-    if (eb != CLICK_NONE && !muted) (eb == CLICK_LONG ? bootLongs : bootClicks)++;
+    if (ek != CLICK_NONE && !muted) gesture(true, ek);
+    if (eb != CLICK_NONE && !muted) gesture(false, eb);
     if (both.update(key.isDown(), boot.isDown(), now) == ChordHold::FIRED && !cubeOn) {
       cubeOn = true;
       cubes++;
       cubeAt = now;
-    } else if (cubeOn && !both.muted() && (key.isDown() || boot.isDown())) {
-      both.mute();
-      cubeOn = false;
-      ends++;
     }
     if (both.muted()) {
       restart.cancel();
@@ -1962,9 +1976,16 @@ static void testChord() {
     CHECK(p.events() == 0);                  // no long press of either (0.8 s, 1 s), no click
     CHECK(p.armed == 0 && p.restarts == 0);  // and KEY's five seconds did not count: the clock does not restart
 
-    // a tap of BOOT ends it, and is not "next page"
+    // while it is up a tap of BOOT is "the other cube", not "next page", and a tap of KEY "back the way it came"
     const uint32_t t1 = t;
     p.run(&t, t1, 2000, never, [](uint32_t s) { return s >= 200 && s < 300; });
+    CHECK(p.cubeOn && p.switched == 1 && p.turnedBack == 0 && p.events() == 0);
+    const uint32_t t1b = t;
+    p.run(&t, t1b, 3000, [](uint32_t s) { return (s >= 200 && s < 300) || (s >= 1500 && s < 1600); }, never);
+    CHECK(p.cubeOn && p.switched == 1 && p.turnedBack == 2 && p.events() == 0 && p.ends == 0);
+    // a long press of either button ends it, and is neither "refresh" nor "invert"; held on, it is still nothing
+    const uint32_t t1c = t;
+    p.run(&t, t1c, 4000, never, [](uint32_t s) { return s >= 200 && s < 3200; });
     CHECK(!p.cubeOn && p.ends == 1 && p.events() == 0 && p.cubes == 1);
     // ... and after that the buttons are themselves again
     const uint32_t t2 = t;
@@ -2009,6 +2030,15 @@ static void testChord() {
     p.run(&t, 0, 3000, key, boot);
     CHECK(p.cubes == 1 && p.cubeAt >= 14025 && p.cubeAt <= 14070 && p.restarts == 0 && p.events() == 1);
   }
+  {  // KEY held to end the cube, and let go after two seconds: the clock is back, nothing is refreshed, nothing restarts
+    Pad p;
+    uint32_t t = 0;
+    p.run(&t, 0, 13000, [](uint32_t s) { return s >= 1000 && s < 11500; }, [](uint32_t s) { return s >= 1000 && s < 11500; });
+    CHECK(p.cubes == 1 && p.cubeOn);
+    const uint32_t t1 = t;
+    p.run(&t, t1, 5000, [](uint32_t s) { return s >= 200 && s < 2200; }, [](uint32_t) { return false; });
+    CHECK(!p.cubeOn && p.ends == 1 && p.events() == 0 && p.armed == 0 && p.restarts == 0);
+  }
   {  // held on and on: it comes up once
     Pad p;
     uint32_t t = 0;
@@ -2024,9 +2054,6 @@ static void testChord() {
     CHECK(c.update(false, false, 400) == ChordHold::NONE && c.muted());  // both up: quiet for 520 ms
     CHECK(c.update(false, false, 919) == ChordHold::NONE && c.muted());
     CHECK(c.update(false, false, 920) == ChordHold::NONE && !c.muted());
-    c.mute();  // asked for with nothing down: over 520 ms later
-    CHECK(c.muted() && c.update(false, false, 1000) == ChordHold::NONE && c.muted());
-    CHECK(c.update(false, false, 1520) == ChordHold::NONE && !c.muted());
     ChordHold d(10000, 520);  // held for half a minute: fired once, at ten seconds
     int fired = 0;
     uint32_t firedAt = 0;
@@ -2051,53 +2078,345 @@ static void testChord() {
 static void testInfinityCube() {
   section("infinity cube");
   using namespace infcube;
-  static Line l[kMaxLines + 8];
-  int least = 1 << 30, most = 0, outside = 0, offCorner = 0, tooShort = 0;
-  for (uint32_t ms = 0; ms < 600000; ms += 173) {
-    const int n = frame(ms, 400, 300, l, kMaxLines);
-    if (n < least) least = n;
-    if (n > most) most = n;
-    for (int i = 0; i < n; i++)
-      if (l[i].x0 < 8 || l[i].x0 > 391 || l[i].x1 < 8 || l[i].x1 > 391 || l[i].y0 < 8 || l[i].y0 > 291 || l[i].y1 < 8 || l[i].y1 > 291) outside++;
-    // the eight spokes (after the cube's twelve edges) each start on a corner of the cube
-    for (int i = 12; i < 20; i++) {
-      bool onCorner = false;
-      for (int e = 0; e < 12; e++)
-        onCorner = onCorner || (l[i].x0 == l[e].x0 && l[i].y0 == l[e].y0) || (l[i].x0 == l[e].x1 && l[i].y0 == l[e].y1);
-      if (!onCorner) offCorner++;
+  struct Count {
+    int w, h, margin;
+    int lines = 0, bold = 0, dots = 0, outside = 0, unknown = 0, afterBold = 0, byStyle[kStyles] = {};
+    int top = 1 << 20, bottom = -1;
+    void see(int x, int y) {
+      if (x < margin || x > w - 1 - margin || y < margin || y > h - 1 - margin) outside++;
+      if (y < top) top = y;
+      if (y > bottom) bottom = y;
     }
-    // and the cube is a cube of some size: its longest edge is a good part of the screen's height
-    int longest = 0;
-    for (int e = 0; e < 12; e++) {
-      const int dx = l[e].x1 - l[e].x0, dy = l[e].y1 - l[e].y0;
-      if (dx * dx + dy * dy > longest) longest = dx * dx + dy * dy;
+    void line(int x0, int y0, int x1, int y1, Style style) {
+      lines++;
+      if (style >= kStyles) {
+        unknown++;
+      } else {
+        byStyle[style]++;
+      }
+      if (style == BOLD) {
+        bold++;
+      } else if (bold > 0) {
+        afterBold++;  // the cube's own edges come last, over the ends of what is behind them
+      }
+      see(x0, y0);
+      see(x1, y1);
     }
-    if (longest < 120 * 120) tooShort++;
+    void dot(int x, int y) {
+      dots++;
+      see(x, y);
+    }
+  };
+  int frames = 0, bad = 0, offScreen = 0, empty = 0, small = 0, faces[4] = {}, least = 1 << 30, most = 0;
+  for (uint32_t ms = 0; ms < 600000; ms += 173, frames++) {
+    Count c{400, 300, 8};
+    V3 ax[3];
+    tumble((float)ms, 5, ax);
+    draw(ax, ms, 400, 300, c);
+    const int seen = c.bold / 4;
+    if (c.bold % 4 != 0 || seen < 1 || seen > 3 || c.dots != c.bold) {
+      bad++;
+    } else {
+      faces[seen]++;
+    }
+    if (c.outside || c.unknown || c.afterBold) bad++, offScreen++;
+    if (c.lines - c.bold < 20 || c.byStyle[SOLID] < 1) bad++, empty++;  // behind the faces there is something, some of the cube's far side at least
+    if (c.bottom - c.top < 150) bad++, small++;                         // and the cube is of a size to be seen
+    if (c.lines < least) least = c.lines;
+    if (c.lines > most) most = c.lines;
   }
-  printf("  (%d to %d lines a frame, of %d at most)\n", least, most, kMaxLines);
-  CHECK(least >= 12 + 8 + 12 * 6 && most <= kMaxLines && (most - 20) % 12 == 0);
-  CHECK(outside == 0 && offCorner == 0 && tooShort == 0);
-  // the copies fall inwards without a jump: as one has shrunk into the place of the next, the next starts there
-  CHECK_NEAR(copyScale(0, 0.0f), 1.0, 1e-6);  // (the outermost copy starts on the cube itself)
-  for (int j = 0; j < kCopies - 1; j++) CHECK_NEAR(copyScale(j, 0.9999f), copyScale(j + 1, 0.0f), 1e-3);
-  CHECK(drift(0) == 0.0f && drift(kStepMs) == 0.0f && drift(kStepMs - 1) > 0.999f && drift(kStepMs / 2) == 0.5f);
-  for (int j = 1; j < kCopies; j++) CHECK(copyScale(j, 0.3f) < copyScale(j - 1, 0.3f));
-  // never more lines than there is room for
-  for (int cap : {0, 1, 12, 19, 20, 33}) {
-    Line small[40];
-    for (Line &x : small) x = {-7, -7, -7, -7};
-    const int n = frame(4321, 400, 300, small, cap);
-    CHECK(n == cap);  // (a whole picture is far more than any of these)
-    for (int i = cap; i < 40; i++) CHECK(small[i].x0 == -7);
+  printf("  (%d frames: one face seen in %d, two in %d, three in %d; %d to %d lines a frame)\n", frames, faces[1], faces[2], faces[3], least, most);
+  if (bad) printf("  %d frames are wrong: %d off the screen or out of order, %d with nothing behind the faces, %d too small\n", bad, offScreen, empty, small);
+  CHECK(bad == 0);
+  CHECK(faces[2] > 0 && faces[3] > 0 && faces[1] + faces[2] + faces[3] == frames);
+  {  // seen square on: one face, its four edges, its four corners
+    const V3 square[3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    Count c{400, 300, 8};
+    draw(square, 0, 400, 300, c);
+    CHECK(c.bold == 4 && c.dots == 4 && c.outside == 0);
   }
-  // a small screen gets a small cube, not a clipped one
-  int outsideSmall = 0;
-  for (uint32_t ms = 0; ms < 60000; ms += 211) {
-    const int n = frame(ms, 128, 64, l, kMaxLines);
-    for (int i = 0; i < n; i++)
-      if (l[i].x0 < 0 || l[i].x0 > 127 || l[i].x1 < 0 || l[i].x1 > 127 || l[i].y0 < 0 || l[i].y0 > 63 || l[i].y1 < 0 || l[i].y1 > 63) outsideSmall++;
+  {  // a small screen gets a small cube, not a cut one
+    int outside = 0;
+    for (uint32_t ms = 0; ms < 60000; ms += 211) {
+      Count c{128, 64, 0};
+      V3 ax[3];
+      tumble((float)ms, 9, ax);
+      draw(ax, ms, 128, 64, c);
+      outside += c.outside;
+    }
+    CHECK(outside == 0);
   }
-  CHECK(outsideSmall == 0);
+  {  // the tumble: three unit axes at right angles, always; never a jerk; every side of the cube comes to the front;
+     // another seed, another way; and back along the same way, it is where it was
+    int skewed = 0, jerks = 0;
+    float least[3] = {9, 9, 9}, most[3] = {-9, -9, -9};
+    V3 was[3];
+    tumble(0.0f, 5, was);
+    for (uint32_t ms = 16; ms < 900000; ms += 16) {
+      V3 ax[3];
+      tumble((float)ms, 5, ax);
+      for (int i = 0; i < 3; i++) {
+        if (fabsf(dot(ax[i], ax[i]) - 1.0f) > 1e-4f || fabsf(dot(ax[i], ax[(i + 1) % 3])) > 1e-4f) skewed++;
+        const V3 moved = sub(ax[i], was[i]);
+        if (dot(moved, moved) > 0.04f * 0.04f) jerks++;  // (a frame of 16 ms: under two and a half degrees)
+        if (ax[i].z < least[i]) least[i] = ax[i].z;
+        if (ax[i].z > most[i]) most[i] = ax[i].z;
+        was[i] = ax[i];
+      }
+    }
+    CHECK(skewed == 0 && jerks == 0);
+    for (int i = 0; i < 3; i++) CHECK(least[i] < -0.9f && most[i] > 0.9f);
+    V3 a[3], b[3], c[3];
+    tumble(30000.0f, 5, a);
+    tumble(30000.0f, 5, b);
+    tumble(30000.0f, 6, c);
+    CHECK(a[0].x == b[0].x && a[1].y == b[1].y && a[2].z == b[2].z);
+    CHECK(fabsf(a[0].x - c[0].x) + fabsf(a[1].y - c[1].y) + fabsf(a[2].z - c[2].z) > 0.05f);
+    tumble(0.0f, 5, a);
+    tumble(0.0f, 6, c);
+    CHECK(fabsf(a[0].x - c[0].x) + fabsf(a[1].y - c[1].y) + fabsf(a[2].z - c[2].z) > 0.05f);  // (they do not even start alike)
+    // it is a slow thing: a quarter of a second moves no axis by more than a quarter of the way to its neighbour
+    tumble(60000.0f, 5, a);
+    tumble(60250.0f, 5, b);
+    for (int i = 0; i < 3; i++) CHECK(dot(a[i], b[i]) > 0.92f);
+  }
+  // the further a reflection, the fainter, down to nothing
+  CHECK(fade(1) == SOLID && fade(2) == FADE1 && fade(1000) == NONE);
+  for (int b = 1; b < 40; b++) CHECK(fade(b + 1) >= fade(b));
+  bool everyStep = true;
+  for (int style = SOLID; style <= FADE4; style++) {
+    bool found = false;
+    for (int b = 1; b < 40; b++) found = found || fade(b) == style;
+    everyStep = everyStep && found;
+  }
+  CHECK(everyStep);
+  // the pulse: from the depth to the front, one cube a step, then a rest
+  CHECK(pulseAt(0) == kDepth && pulseAt(kPulseStepMs - 1) == kDepth && pulseAt(kPulseStepMs) == kDepth - 1);
+  CHECK(pulseAt((kDepth - 1) * kPulseStepMs) == 1 && pulseAt(kDepth * kPulseStepMs) == 0);
+  CHECK(pulseAt((kDepth + kPulseRest) * kPulseStepMs) == kDepth && pulseAt((kDepth + kPulseRest) * kPulseStepMs - 1) == 1 - kPulseRest);
+  // the window: what is seen from the eye through the square from (-1, -1) to (1, 1), one in front of it
+  Window win;
+  win.eye = {0, 0, -1};
+  const V3 sq[4] = {{1, 1, 0}, {-1, 1, 0}, {-1, -1, 0}, {1, -1, 0}};
+  for (int i = 0; i < 4; i++) {
+    V3 m = cross(sub(sq[i], win.eye), sub(sq[(i + 1) & 3], win.eye));
+    if (dot(m, sub(V3{0, 0, 0}, win.eye)) < 0) m = mul(m, -1.0f);
+    win.normal[i] = m;
+  }
+  float t0 = -1, t1 = -1;
+  CHECK(win.clip({-0.5f, 0, 0}, {1, 0, 0}, &t0, &t1) && t0 == 0.0f && t1 == 1.0f);  // inside from end to end
+  CHECK(win.clip({-3, 0, 0}, {6, 0, 0}, &t0, &t1));                                  // across the square: the middle third
+  CHECK_NEAR(t0, 1.0 / 3.0, 1e-5);
+  CHECK_NEAR(t1, 2.0 / 3.0, 1e-5);
+  CHECK(win.clip({-10, 0, 1}, {20, 0, 0}, &t0, &t1));  // one further away, the window is twice as wide: -2 to 2
+  CHECK_NEAR(t0, 0.4, 1e-5);
+  CHECK_NEAR(t1, 0.6, 1e-5);
+  CHECK(win.clip({0, 0, 0}, {0, 9, 0}, &t0, &t1) && t0 == 0.0f);  // from the middle out through the top edge
+  CHECK_NEAR(t1, 1.0 / 9.0, 1e-5);
+  CHECK(win.clip({0, 0, 0}, {0, 9, 9}, &t0, &t1) && t0 == 0.0f && t1 == 1.0f);  // up and away as steeply as the window widens: never out
+  CHECK(!win.clip({2, 2, 0}, {5, 0, 0}, &t0, &t1));    // beside it
+  CHECK(!win.clip({-3, 1.5f, 0}, {6, 0, 0}, &t0, &t1));  // past it, above
+  CHECK(!win.clip({1.5f, -3, 0}, {0, 6, 0}, &t0, &t1));  // alongside an edge, outside it
+}
+
+// ---------------------------------------------------------------------------
+// The other cube those buttons bring up (sand_cube.h): sand on the walls of a cube that tumbles.
+// ---------------------------------------------------------------------------
+static void testSandCube() {
+  section("sand cube");
+  using namespace sandcube;
+  const int want = kCells * kCells * kFillPercent / 100;
+  auto same = [](const Sand &a, const Sand &b) {
+    for (int f = 0; f < 6; f++)
+      for (int j = 0; j < kCells; j++)
+        for (int i = 0; i < kCells; i++)
+          if (a.has(f, i, j) != b.has(f, i, j)) return false;
+    return true;
+  };
+  {  // the same amount of sand on every face; the same seed gives the same sand, another seed other sand
+    Sand a, b, c;
+    a.reset(7);
+    b.reset(7);
+    c.reset(8);
+    for (int f = 0; f < 6; f++) CHECK(a.grains(f) == want && c.grains(f) == want);
+    CHECK(same(a, b) && !same(a, c));
+    V3 ax[3];
+    infcube::tumble(1000.0f, 3, ax);
+    a.step(ax);
+    b.step(ax);
+    CHECK(same(a, b));  // ... and runs the same way
+  }
+  {  // gravity down one side: the sand ends up there, packed, and none of it is lost on the way
+    Sand s;
+    s.reset(3);
+    float a0, b0, a1, b1;
+    s.centre(2, &a0, &b0);
+    CHECK(fabsf(a0) < 0.15f && fabsf(b0) < 0.15f);  // scattered evenly to begin with
+    for (int k = 0; k < 600; k++) s.stepFace(2, 0.0f, -1.0f);
+    s.centre(2, &a1, &b1);
+    CHECK(s.grains(2) == want);
+    CHECK(b1 < -0.55f && fabsf(a1) < 0.1f);
+    int fullRows = 0, strays = 0;
+    for (int j = 0; j < kCells; j++) {
+      int n = 0;
+      for (int i = 0; i < kCells; i++) n += s.has(2, i, j) ? 1 : 0;
+      if (n == kCells && j == fullRows) fullRows++;
+      if (j >= want / kCells + 3) strays += n;
+    }
+    CHECK(fullRows >= want / kCells - 2 && strays == 0);  // a level bed, but for a grain or two on top
+    // the other faces were not touched
+    Sand fresh;
+    fresh.reset(3);
+    for (int f = 0; f < 6; f++) {
+      if (f == 2) continue;
+      float fa, fb, ga, gb;
+      s.centre(f, &fa, &fb);
+      fresh.centre(f, &ga, &gb);
+      CHECK(fa == ga && fb == gb);
+    }
+    // then the other way: it pours back, all of it
+    for (int k = 0; k < 600; k++) s.stepFace(2, 0.0f, 1.0f);
+    s.centre(2, &a1, &b1);
+    CHECK(s.grains(2) == want && b1 > 0.55f);
+    // along the other side, and into a corner
+    for (int k = 0; k < 600; k++) s.stepFace(2, 1.0f, 0.0f);
+    s.centre(2, &a1, &b1);
+    CHECK(s.grains(2) == want && a1 > 0.55f && fabsf(b1) < 0.25f);
+    for (int k = 0; k < 600; k++) s.stepFace(2, -0.7f, -0.7f);
+    s.centre(2, &a1, &b1);
+    CHECK(s.grains(2) == want && a1 < -0.3f && b1 < -0.3f);
+  }
+  {  // a face that lies flat keeps its sand where it is; on a gentle slope it creeps
+    Sand s, before;
+    s.reset(5);
+    before.reset(5);
+    for (int k = 0; k < 200; k++) s.stepFace(0, kFlat * 0.6f, -kFlat * 0.6f);
+    CHECK(same(s, before));
+    float a0, b0, a1, b1, a2, b2;
+    before.centre(0, &a0, &b0);
+    for (int k = 0; k < 10; k++) s.stepFace(0, 0.0f, -0.2f);
+    s.centre(0, &a1, &b1);
+    Sand steep;
+    steep.reset(5);
+    for (int k = 0; k < 10; k++) steep.stepFace(0, 0.0f, -1.0f);
+    steep.centre(0, &a2, &b2);
+    CHECK(b1 < b0 - 0.01f && b2 < b1 - 0.05f);  // ten steps: a little way on the slope, a long way straight down
+  }
+  {  // the cube tumbles for ten minutes: every face keeps its sand, and every face has had it at more than one side
+    Sand s;
+    s.reset(11);
+    float lowA[6], highA[6], lowB[6], highB[6];
+    for (int f = 0; f < 6; f++) lowA[f] = lowB[f] = 9, highA[f] = highB[f] = -9;
+    for (uint32_t ms = 0; ms < 600000; ms += kStepMs) {
+      V3 ax[3];
+      infcube::tumble((float)ms, 11, ax);
+      s.advance(ms, ax);
+      if (ms % (kStepMs * 20) != 0) continue;
+      for (int f = 0; f < 6; f++) {
+        float a, b;
+        s.centre(f, &a, &b);
+        if (a < lowA[f]) lowA[f] = a;
+        if (a > highA[f]) highA[f] = a;
+        if (b < lowB[f]) lowB[f] = b;
+        if (b > highB[f]) highB[f] = b;
+      }
+    }
+    int kept = 0, sloshed = 0;
+    for (int f = 0; f < 6; f++) {
+      kept += s.grains(f) == want ? 1 : 0;
+      sloshed += (highA[f] - lowA[f] > 0.6f || highB[f] - lowB[f] > 0.6f) ? 1 : 0;
+    }
+    CHECK(kept == 6 && sloshed == 6);
+  }
+  {  // "down" is the bottom of the screen: with the cube held as it starts, the sand of the face in front ends up low on it
+    struct Mean {
+      long sumY = 0, n = 0;
+      void grain(int, int y, int) {
+        sumY += y;
+        n++;
+      }
+      void line(int, int, int, int, infcube::Style) {}
+      void dot(int, int) {}
+    };
+    const V3 square[3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    Sand s;
+    s.reset(6);
+    Mean before, after;
+    s.draw(square, 400, 300, before);
+    for (int k = 0; k < 600; k++) s.step(square);
+    s.draw(square, 400, 300, after);
+    CHECK(before.n == want && after.n == want);  // one face is seen, square on
+    CHECK(labs(before.sumY / before.n - 150) < 12 && after.sumY / after.n > 200);
+  }
+  {  // advance(): a step every kStepMs, a late call is not made up for, time that starts again is taken as it comes
+    V3 ax[3];
+    infcube::tumble(5000.0f, 2, ax);  // (tipped, so that the sand has somewhere to run)
+    Sand a, b, start;
+    a.reset(9);
+    b.reset(9);
+    start.reset(9);
+    a.advance(0, ax);
+    CHECK(same(a, b));  // nothing is due at the start
+    a.advance(kStepMs - 1, ax);
+    CHECK(same(a, b));
+    a.advance(kStepMs, ax);
+    b.step(ax);
+    CHECK(same(a, b) && !same(a, start));
+    a.advance(kStepMs * 3, ax);  // two more
+    b.step(ax);
+    b.step(ax);
+    CHECK(same(a, b));
+    a.advance(kStepMs * 1000, ax);  // very late: only a few steps are taken, not a thousand
+    for (int k = 0; k < kMaxStepsAtOnce; k++) b.step(ax);
+    CHECK(same(a, b));
+    a.advance(kStepMs * 2, ax);  // the time started again: nothing is taken, and it goes on from there
+    CHECK(same(a, b));
+    a.advance(kStepMs * 3, ax);
+    b.step(ax);
+    CHECK(same(a, b));
+  }
+  {  // the picture: the sand of the faces that are seen, their edges after it, all of it on the screen
+    struct Count {
+      int grains = 0, bold = 0, dots = 0, outside = 0, lateGrains = 0, tiny = 0, huge = 0;
+      void see(int x, int y, int r) {
+        if (x - r < 8 || x + r > 391 || y - r < 8 || y + r > 291) outside++;
+      }
+      void grain(int x, int y, int size) {
+        grains++;
+        if (bold) lateGrains++;
+        if (size < 1) tiny++;
+        if (size > 9) huge++;
+        see(x, y, size / 2);
+      }
+      void line(int x0, int y0, int x1, int y1, infcube::Style style) {
+        if (style == infcube::BOLD) bold++;
+        see(x0, y0, 1);
+        see(x1, y1, 1);
+      }
+      void dot(int x, int y) {
+        dots++;
+        see(x, y, 3);
+      }
+    };
+    Sand s;
+    s.reset(4);
+    int bad = 0, faces[4] = {};
+    for (uint32_t ms = 0; ms < 300000; ms += 149) {
+      V3 ax[3];
+      infcube::tumble((float)ms, 4, ax);
+      s.advance(ms, ax);
+      Count c;
+      s.draw(ax, 400, 300, c);
+      const int seen = c.bold / 4;
+      if (c.bold % 4 != 0 || seen < 1 || seen > 3 || c.dots != c.bold || c.grains != seen * want) {
+        bad++;
+      } else {
+        faces[seen]++;
+      }
+      if (c.outside || c.lateGrains || c.tiny || c.huge) bad++;
+    }
+    CHECK(bad == 0 && faces[2] > 0 && faces[3] > 0);
+  }
 }
 
 int main() {
@@ -2117,6 +2436,7 @@ int main() {
   testHoldRelease();
   testChord();
   testInfinityCube();
+  testSandCube();
   printf("\n%d checks, %d failed\n", g_checks, g_failed);
   return g_failed ? 1 : 0;
 }

@@ -121,8 +121,8 @@ class HoldRelease {
 // both are down until both are up again, and for `quietMs` after that, the buttons' own gestures must not
 // count (muted()): each one's long press comes due long before the two together do, a hold that acts on
 // letting go would act, and two buttons let go are not two clicks.  The quiet time is for the click that a
-// detector reports a moment after its button came up.  mute() asks for the same silence around one press
-// that means something else.  Feed it the debounced states of the two ClickDetectors (isDown()).
+// detector reports a moment after its button came up.  Feed it the debounced states of the two
+// ClickDetectors (isDown()).
 class ChordHold {
  public:
   enum Event : uint8_t { NONE = 0, FIRED };
@@ -151,14 +151,12 @@ class ChordHold {
   }
 
   bool muted() const { return engaged_ || quiet_; }
-  // What the buttons report does not count until they are up, and quiet, again.
-  void mute() { engaged_ = true; }
 
  private:
   uint32_t holdMs_, quietMs_;
   bool both_ = false;     // the two are down together right now
   bool fired_ = false;    // ... and that has been reported
-  bool engaged_ = false;  // they were, and not both have come up since (or mute() was asked for)
+  bool engaged_ = false;  // they were, and not both have come up since
   bool quiet_ = false;    // both came up a moment ago
   uint32_t sinceMs_ = 0, quietSinceMs_ = 0;
 };

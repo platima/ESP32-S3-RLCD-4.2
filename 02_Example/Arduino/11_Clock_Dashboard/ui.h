@@ -23,6 +23,13 @@ void uiDrawBatteryEmpty(u8g2_t *u8g2, float volts, float restartVolts, bool offe
 // The firmware-update screen: a chip, a heading, what is going on, a progress bar and the file.
 void uiDrawFirmwareUpdate(u8g2_t *u8g2, const UiFwScreen &screen);
 
-// A turning cube with copies of itself receding inside it, `elapsedMs` after it began (white on black, the
-// whole screen).  The caller sends the buffer.
-void uiDrawInfinityCube(u8g2_t *u8g2, uint32_t elapsedMs);
+// A tumbling cube, white on black, over the whole screen: one of mirrors, each face a window on the reflections
+// of its own lit edges, or one with sand on its walls that runs to whichever side is down.  The caller sends the
+// buffer.  It is no page of the clock.
+struct UiCube {
+  bool mirrors = false;    // which of the two
+  uint32_t seed = 1;       // of the way it tumbles (and of where the sand lies to begin with): another one every showing
+  float turnMs = 0;        // how far along its tumbling it is, in milliseconds: counted down while it turns back
+  uint32_t elapsedMs = 0;  // since it came up; has to go up from call to call (the sand runs by it)
+};
+void uiDrawCube(u8g2_t *u8g2, const UiCube &cube);

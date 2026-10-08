@@ -1144,11 +1144,23 @@ static int checkButtonHelp() {
 }
 
 // ---------------------------------------------------------------------------
-// The turning cube that both buttons bring up (ui.cpp, infinity_cube.h): white lines on black.  Whichever way
-// it has turned, and however far its copies have fallen in, it has to stay clear of the edges of the screen,
-// and it has to be a picture: neither nothing nor a white screen.
+// The turning cubes that both buttons bring up (ui.cpp; infinity_cube.h, sand_cube.h): white on black.  Whichever
+// way a cube has turned, it has to stay clear of the edges of the screen, and it has to be a picture: neither
+// nothing nor a white screen.
 // ---------------------------------------------------------------------------
-static int checkInfinityCube() {
+static uint32_t g_cubeSeed = 1;
+static void drawCube(bool mirrors, float turnMs, uint32_t elapsedMs) {
+  UiCube c;
+  c.mirrors = mirrors;
+  c.seed = g_cubeSeed;
+  c.turnMs = turnMs;
+  c.elapsedMs = elapsedMs;
+  uiDrawCube(g_u, c);
+}
+static void drawMirrorCube(u8g2_t *, uint32_t ms) { drawCube(true, (float)ms, ms); }
+static void drawSandCube(u8g2_t *, uint32_t ms) { drawCube(false, (float)ms, ms); }
+
+static int checkCube(const char *name, void (*drawFn)(u8g2_t *, uint32_t), int leastWanted) {
   int bad = 0;
   const int kMargin = 8;
   auto litOutside = [&]() {  // white pixels in the band of kMargin along the four edges
@@ -1160,10 +1172,10 @@ static int checkInfinityCube() {
       }
     return n;
   };
-  int frames = 0, least = 1 << 30, most = 0, touching = 0, top = UI_HEIGHT, bottom = 0, dark = 0;
+  int frames = 0, least = 1 << 30, most = 0, touching = 0, top = UI_HEIGHT, bottom = 0;
   for (uint32_t ms = 0; ms < 180000; ms += 131, frames++) {  // three minutes of it: every turn of the cube, every stage of the fall
     u8g2_ClearBuffer(g_u);
-    uiDrawInfinityCube(g_u, ms);
+    drawFn(g_u, ms);
     if (litOutside() > 0) touching++;
     int lit = 0;
     for (int y = 0; y < UI_HEIGHT; y++) {
@@ -1178,17 +1190,16 @@ static int checkInfinityCube() {
     }
     if (lit < least) least = lit;
     if (lit > most) most = lit;
-    if (!inkAt(UI_WIDTH / 2, UI_HEIGHT / 2) && !inkAt(UI_WIDTH / 2 - 1, UI_HEIGHT / 2 - 1)) dark++;  // (the copies end in a point of light)
   }
-  printf("infinity cube: %d frames, %d to %d white pixels of %d, rows %d to %d, %d touch the %d px margin\n", frames, least, most,
+  printf("%s: %d frames, %d to %d white pixels of %d, rows %d to %d, %d touch the %d px margin\n", name, frames, least, most,
          UI_WIDTH * UI_HEIGHT, top, bottom, touching, kMargin);
-  if (touching || least < 2000 || most > UI_WIDTH * UI_HEIGHT / 4 || top > 40 || bottom < UI_HEIGHT - 41) {
+  if (touching || least < leastWanted || most > UI_WIDTH * UI_HEIGHT / 4 || top > 40 || bottom < UI_HEIGHT - 41) {
     printf("  CUBE: it leaves the screen, fills it, or is too small to be seen\n");
     bad++;
   }
   {  // negative control: a pixel in the margin is seen, and so is a frame with nothing in it
     u8g2_ClearBuffer(g_u);
-    uiDrawInfinityCube(g_u, 0);
+    drawFn(g_u, 0);
     u8g2_SetDrawColor(g_u, 0);
     u8g2_DrawPixel(g_u, kMargin - 1, UI_HEIGHT / 2);
     u8g2_SetDrawColor(g_u, 1);
@@ -1459,14 +1470,25 @@ int main() {
   bad += checkRainGlyph();           // ...or the rain drop is not a drop, or not where its number is...
   bad += checkFirmwareScreen();      // ...or the firmware-update screen's bar or text is off...
   bad += checkButtonHelp();          // ...or the legend's button help or the restart banner does not fit...
-  bad += checkInfinityCube();        // ...or the cube leaves the screen
+  for (uint32_t seed : {20261008u, 7u}) {  // ...or a cube leaves the screen, whichever way it tumbles
+    g_cubeSeed = seed;
+    bad += checkCube("mirror cube", drawMirrorCube, 2000);
+    bad += checkCube("sand cube", drawSandCube, 2000);
+  }
 
   // the cube as a strip of frames (to_png.py, or any tool that reads PGM, makes a film of them)
   for (int i = 0; i < 72; i++) {
     u8g2_ClearBuffer(g_u);
-    uiDrawInfinityCube(g_u, (uint32_t)i * 85);
+    drawCube(true, (float)(i < 48 ? i : 96 - i) * 85.0f, (uint32_t)i * 85);  // (the last third: turning back)
     char path[64];
     snprintf(path, sizeof path, "out/cube_%02d.pgm", i);
+    hostDumpPgm(path);
+  }
+  for (int i = 0; i < 160; i++) {
+    u8g2_ClearBuffer(g_u);
+    drawCube(false, (float)(i < 110 ? i : 220 - i) * 70.0f, (uint32_t)i * 70);
+    char path[64];
+    snprintf(path, sizeof path, "out/sand_%03d.pgm", i);
     hostDumpPgm(path);
   }
   printf("rendered out/cube_00.pgm .. cube_71.pgm\n");

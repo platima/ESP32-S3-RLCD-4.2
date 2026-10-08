@@ -62,11 +62,15 @@ static Preferences s_uiPrefs;  // namespace "ui": remembers the screen polarity 
 static ClickDetector s_key(KEY_MULTI_CLICK_GAP_MS, KEY_LONG_PRESS_MS);
 static ClickDetector s_boot(KEY_MULTI_CLICK_GAP_MS, BOOT_LONG_PRESS_MS);
 static HoldRelease s_restartHold(KEY_RESTART_HOLD_MS);  // KEY held for five seconds, then let go: restart
-// KEY and BOOT held down together for ten seconds: the cube (cubeFrame).  It is in no legend and no manual.
-static const uint32_t kCubeHoldMs = 10000, kCubeMaxMs = 60000;
+// KEY and BOOT held down together for ten seconds: a cube that tumbles (cubeFrame).  It is in no legend and no
+// manual.  While it is up, KEY turns it the other way round, BOOT shows the other of the two cubes, and a long
+// press of either (or two minutes with no button touched) brings the clock back.
+static const uint32_t kCubeHoldMs = 10000, kCubeIdleMs = 120000;
 static ChordHold s_bothHeld(kCubeHoldMs, KEY_MULTI_CLICK_GAP_MS + 200);
 static bool s_cubeOn = false;
-static uint32_t s_cubeStartMs = 0;
+static UiCube s_cube;       // which cube (it stays the one that was shown last), and how far it has tumbled
+static int s_cubeWay = 1;   // 1, or -1 while it turns back
+static uint32_t s_cubeStartMs = 0, s_cubeFrameMs = 0, s_cubeTouchMs = 0;
 static bool s_restartAsked = false;                     // ... which loop() then does
 
 static UiPage s_page = PAGE_DASHBOARD;
@@ -212,9 +216,48 @@ static void handleBoot(ClickEvent e) {
   s_forceRedraw = true;
 }
 
+static void cubeBegin(uint32_t nowMs) {
+  s_cubeOn = true;
+  s_cube.seed = esp_random() | 1u;  // it tumbles another way every time
+  s_cube.turnMs = 0;
+  s_cube.elapsedMs = 0;
+  s_cubeWay = 1;
+  s_cubeStartMs = s_cubeFrameMs = s_cubeTouchMs = nowMs;
+}
+
 static void cubeEnd() {
   s_cubeOn = false;
   s_forceRedraw = true;  // the clock again, at once
+}
+
+// A button while the cube is up.
+static void cubeButton(bool key, ClickEvent e) {
+  if (e == CLICK_LONG) {
+    cubeEnd();
+    return;
+  }
+  s_cubeTouchMs = millis();
+  if (key) {
+    s_cubeWay = -s_cubeWay;  // back the way it came
+  } else {
+    s_cube.mirrors = !s_cube.mirrors;  // the other cube, where this one is
+  }
+}
+
+// What a button's gesture goes to: the cube while it is up, else what the button is for.
+static void onKey(ClickEvent e) {
+  if (s_cubeOn) {
+    cubeButton(true, e);
+  } else {
+    handleKey(e);
+  }
+}
+static void onBoot(ClickEvent e) {
+  if (s_cubeOn) {
+    cubeButton(false, e);
+  } else {
+    handleBoot(e);
+  }
 }
 
 static void pollButtons(uint32_t nowMs) {
@@ -229,12 +272,12 @@ static void pollButtons(uint32_t nowMs) {
     while (buttonEdgeTake(BUTTON_KEY, &down, &at)) {
       active = true;
       const ClickEvent e = s_key.edge(down, at);
-      if (e != CLICK_NONE && !muted) handleKey(e);
+      if (e != CLICK_NONE && !muted) onKey(e);
     }
     while (buttonEdgeTake(BUTTON_BOOT, &down, &at)) {
       active = true;
       const ClickEvent e = s_boot.edge(down, at);
-      if (e != CLICK_NONE && !muted) handleBoot(e);
+      if (e != CLICK_NONE && !muted) onBoot(e);
     }
     nowMs = millis();  // not earlier than what was just replayed
   }
@@ -245,18 +288,12 @@ static void pollButtons(uint32_t nowMs) {
   ClickEvent b = buttonEdgesOn() ? s_boot.edge(bootDown, nowMs) : s_boot.update(bootDown, nowMs);
   // a button is down, or was a moment ago: the answer is drawn at the working clock (cpu_idle_mhz)
   if (active || keyDown || bootDown || k != CLICK_NONE || b != CLICK_NONE) s_pokeUntilMs = (nowMs + clockpolicy::kPokeMs) | 1u;
-  if (k != CLICK_NONE && !muted) handleKey(k);
-  if (b != CLICK_NONE && !muted) handleBoot(b);
+  if (k != CLICK_NONE && !muted) onKey(k);
+  if (b != CLICK_NONE && !muted) onBoot(b);
 
   // KEY and BOOT held down together for ten seconds: the cube.  While the two are down, and until both are up
   // again, neither is a long press, a click or the hold that restarts the clock.
-  if (s_bothHeld.update(s_key.isDown(), s_boot.isDown(), nowMs) == ChordHold::FIRED && !s_cubeOn) {
-    s_cubeOn = true;
-    s_cubeStartMs = nowMs;
-  } else if (s_cubeOn && !s_bothHeld.muted() && (s_key.isDown() || s_boot.isDown())) {
-    s_bothHeld.mute();  // any button ends it, and that press is nothing else
-    cubeEnd();
-  }
+  if (s_bothHeld.update(s_key.isDown(), s_boot.isDown(), nowMs) == ChordHold::FIRED && !s_cubeOn) cubeBegin(nowMs);
   if (s_bothHeld.muted()) {
     s_restartHold.cancel();
     if (!strcmp(s_toast, UI_TOAST_RESTART_HOLD)) {  // KEY was held long enough to restart, and then BOOT joined it
@@ -1326,18 +1363,21 @@ static void announceConfig() {
   cfgAnnounced();  // the count from the last start is for this banner only, whatever it said
 }
 
-// The cube that KEY and BOOT bring up when they are held down together for ten seconds: a frame of it, as
-// often as the loop comes round, until a button is pressed (pollButtons) or a minute is over.  Nothing of the
-// clock is drawn meanwhile; the battery is still read, because a gap in its readings would start the charge
-// detector afresh.
+// The cube that KEY and BOOT bring up when they are held down together for ten seconds: a frame of it, as often
+// as the loop comes round, until a button is held (cubeButton) or nobody has touched one for two minutes.
+// Nothing of the clock is drawn meanwhile; the battery is still read, because a gap in its readings would start
+// the charge detector afresh.
 static void cubeFrame(uint32_t nowMs) {
-  if ((uint32_t)(nowMs - s_cubeStartMs) >= kCubeMaxMs) {
+  if ((uint32_t)(nowMs - s_cubeTouchMs) >= kCubeIdleMs) {
     cubeEnd();
     return;
   }
   s_pokeUntilMs = (nowMs + clockpolicy::kPokeMs) | 1u;  // at the working clock, as after a button press (cpu_idle_mhz)
+  s_cube.turnMs += (float)s_cubeWay * (float)(uint32_t)(nowMs - s_cubeFrameMs);
+  s_cubeFrameMs = nowMs;
+  s_cube.elapsedMs = nowMs - s_cubeStartMs;
   u8g2_ClearBuffer(s_u8g2);
-  uiDrawInfinityCube(s_u8g2, nowMs - s_cubeStartMs);
+  uiDrawCube(s_u8g2, s_cube);
   u8g2_SendBuffer(s_u8g2);
   readSlowSensors(nowMs);
 }

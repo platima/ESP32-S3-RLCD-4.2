@@ -7,6 +7,7 @@
 
 #include "datefmt.h"
 #include "infinity_cube.h"
+#include "sand_cube.h"
 #include "moon.h"
 #include "timeutil.h"
 #include "weather_codes.h"
@@ -1473,22 +1474,88 @@ void uiDrawFirmwareUpdate(u8g2_t *u, const UiFwScreen &s) {
   }
 }
 
-// An infinity-mirror cube, in white lines on black: a cube that turns, with copies of itself falling away inside
-// it (infinity_cube.h has the geometry).  It is no page of the clock: the sketch shows it to whoever holds both
-// buttons down for long enough.
-void uiDrawInfinityCube(u8g2_t *u, uint32_t elapsedMs) {
-  static infcube::Line lines[infcube::kMaxLines];  // (not on the stack: 1.5 KB)
-  const int n = infcube::frame(elapsedMs, UI_WIDTH, UI_HEIGHT, lines, infcube::kMaxLines);
+// An infinity-mirror cube, in white on black: a cube of mirrors that turns, each face a window on the lattice of
+// its own lit frame, reflected without end (infinity_cube.h has the geometry, and how bright each line is).  It
+// is no page of the clock: the sketch shows it to whoever holds both buttons down for long enough.
+
+// A line of which `on` pixels are drawn and `off` are not, over and over: the fainter reflections.
+static void cubeDashes(u8g2_t *u, int x0, int y0, int x1, int y1, int on, int off) {
+  const int dx = abs(x1 - x0), dy = abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+  int err = dx - dy, i = 0;
+  for (;;) {
+    if (i < on) u8g2_DrawPixel(u, x0, y0);
+    if (++i == on + off) i = 0;
+    if (x0 == x1 && y0 == y1) break;
+    const int e2 = 2 * err;
+    if (e2 > -dy) {
+      err -= dy;
+      x0 += sx;
+    }
+    if (e2 < dx) {
+      err += dx;
+      y0 += sy;
+    }
+  }
+}
+
+// An edge of the cube itself, three pixels wide.
+static void cubeEdge(u8g2_t *u, int x0, int y0, int x1, int y1) {
+  u8g2_DrawLine(u, x0, y0, x1, y1);
+  u8g2_DrawLine(u, x0 + 1, y0, x1 + 1, y1);
+  u8g2_DrawLine(u, x0 - 1, y0, x1 - 1, y1);
+  u8g2_DrawLine(u, x0, y0 + 1, x1, y1 + 1);
+  u8g2_DrawLine(u, x0, y0 - 1, x1, y1 - 1);
+}
+
+namespace {
+struct CubePen {
+  u8g2_t *u;
+  void line(int x0, int y0, int x1, int y1, infcube::Style style) {
+    switch (style) {
+      case infcube::BOLD: cubeEdge(u, x0, y0, x1, y1); break;
+      case infcube::SOLID: u8g2_DrawLine(u, x0, y0, x1, y1); break;
+      case infcube::FADE1: cubeDashes(u, x0, y0, x1, y1, 3, 1); break;
+      case infcube::FADE2: cubeDashes(u, x0, y0, x1, y1, 1, 1); break;
+      case infcube::FADE3: cubeDashes(u, x0, y0, x1, y1, 1, 3); break;
+      case infcube::FADE4: cubeDashes(u, x0, y0, x1, y1, 1, 7); break;
+      default: break;
+    }
+  }
+  void dot(int x, int y) { u8g2_DrawDisc(u, x, y, 3, U8G2_DRAW_ALL); }  // a glint on a corner
+};
+}  // namespace
+
+// ... and the other cube: sand on its walls, which runs to whatever side of each face is down (sand_cube.h).
+namespace {
+struct SandPen {
+  u8g2_t *u;
+  void grain(int x, int y, int size) { u8g2_DrawBox(u, x - size / 2, y - size / 2, size, size); }
+  void line(int x0, int y0, int x1, int y1, infcube::Style) { cubeEdge(u, x0, y0, x1, y1); }
+  void dot(int x, int y) { u8g2_DrawDisc(u, x, y, 3, U8G2_DRAW_ALL); }
+};
+}  // namespace
+
+
+// One of the two cubes, tumbling (infcube::tumble()).  The sand keeps its own state from call to call: it starts
+// afresh when the time does, or with another seed.
+void uiDrawCube(u8g2_t *u, const UiCube &cube) {
+  static sandcube::Sand sand;
+  static uint32_t lastMs = 0xFFFFFFFFu, lastSeed = 0;
+  if (cube.elapsedMs < lastMs || cube.seed != lastSeed) sand.reset(cube.seed);  // a new showing
+  lastMs = cube.elapsedMs;
+  lastSeed = cube.seed;
+  infcube::V3 axis[3];
+  infcube::tumble(cube.turnMs, cube.seed, axis);
+  sand.advance(cube.elapsedMs, axis);  // (the sand runs on while the mirrors are shown: it is the same cube)
   ink(u);
   u8g2_DrawBox(u, 0, 0, UI_WIDTH, UI_HEIGHT);
   paper(u);
-  for (int i = 0; i < n; i++) {
-    const infcube::Line &l = lines[i];
-    u8g2_DrawLine(u, l.x0, l.y0, l.x1, l.y1);
-    if (i < 12) {  // the cube itself in lines of two pixels, so that it stands out from what is inside it
-      u8g2_DrawLine(u, l.x0 + 1, l.y0, l.x1 + 1, l.y1);
-      u8g2_DrawLine(u, l.x0, l.y0 + 1, l.x1, l.y1 + 1);
-    }
+  if (cube.mirrors) {
+    CubePen pen{u};
+    infcube::draw(axis, cube.elapsedMs, UI_WIDTH, UI_HEIGHT, pen);
+  } else {
+    SandPen pen{u};
+    sand.draw(axis, UI_WIDTH, UI_HEIGHT, pen);
   }
   ink(u);
 }
