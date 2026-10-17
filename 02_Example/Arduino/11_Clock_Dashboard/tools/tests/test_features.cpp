@@ -86,8 +86,8 @@ std::string dump(const Settings &s) {
 void testSettingsTable() {
   section("settings table");
   const size_t n = settingCount();
-  CHECK(n == 32);
-  CHECK(n <= 32);  // userSet is a 32 bit mask, and with 32 settings it is full
+  CHECK(n == 33);
+  CHECK(n <= 64);  // userSet is a 64 bit mask
   CHECK_STR(settingKey(n), "");
   CHECK_STR(settingNvsKey(n), "");
   for (size_t i = 0; i < n; i++) {
@@ -127,11 +127,36 @@ void testSettingsRoundTrip() {
   const Applied all = apply(kAllSettings);
   CHECK(all.r.problems() == 0);
   CHECK(all.r.changed == (int)settingCount());
-  CHECK(all.s.userSet == (uint32_t)((1ull << settingCount()) - 1));
+  CHECK(all.s.userSet == (uint64_t)((1ull << settingCount()) - 1));
   Settings t;
   for (size_t i = 0; i < settingCount(); i++) CHECK(applyStoredSetting(t, i, fmt(all.s, i).c_str()));
   CHECK(dump(t) == dump(all.s));
   CHECK(t.userSet == all.s.userSet);
+
+  // the settings past bit 31 of the mask (it was 32 bits up to 1.9, with 32 settings): set, saved, read back and
+  // forgotten like any other, and on their own bit
+  CHECK(settingCount() > 32);
+  for (size_t i = 31; i < settingCount(); i++) {
+    Settings w;
+    CHECK(applyStoredSetting(w, i, fmt(all.s, i).c_str()));
+    CHECK(settingIsUserSet(w, i) && w.userSet == (1ull << i));
+    for (size_t j = 0; j < settingCount(); j++) CHECK(settingIsUserSet(w, j) == (j == i));
+    const ApplyResult r = applySetting(w, Settings(), settingKey(i), "");
+    CHECK(r == ApplyResult::Cleared && w.userSet == 0 && fmt(w, i) == fmt(Settings(), i));
+  }
+  {  // what a 1.9 clock saved in its flash (one key per setting, the mask is not kept) still loads, and the new
+     // setting is at its default until something sets it
+    Settings old;
+    for (size_t i = 0; i < settingCount(); i++) {
+      if (!strcmp(settingKey(i), "light_sleep")) continue;
+      CHECK(applyStoredSetting(old, i, fmt(all.s, i).c_str()));
+    }
+    CHECK(!old.lightSleep && !settingIsUserSet(old, idx("light_sleep")));
+    CHECK(old.userSet == (uint64_t)(((1ull << settingCount()) - 1) & ~(1ull << idx("light_sleep"))));
+    CHECK(old.weatherIntervalMin == all.s.weatherIntervalMin && settingIsUserSet(old, idx("weather_interval_min")));
+  }
+  CHECK(!Settings().lightSleep && all.s.lightSleep);
+  CHECK_STR(settingNvsKey(idx("light_sleep")), "lsleep");
 
   // stored text that no longer validates is ignored, and leaves the setting alone
   Settings u;
@@ -232,7 +257,7 @@ void testSettingsSyntax() {
   CHECK_STR(apply("wifi_password = \"Pa$$ #1 word\"").s.wifiPassword, "Pa$$ #1 word");
   Settings withPassword;
   snprintf(withPassword.wifiPassword, sizeof withPassword.wifiPassword, "old");
-  withPassword.userSet |= 1u << 2;
+  withPassword.userSet |= 1ull << 2;
   Applied open = apply("wifi_password = \"\"", withPassword);
   CHECK_STR(open.s.wifiPassword, "");
   CHECK(settingIsUserSet(open.s, 2) && open.r.changed == 1);
@@ -700,12 +725,14 @@ void checkExample(const Settings &cur, const char *label) {
 
   // nothing but comments and blank lines, none too wide for a small editor window
   size_t settingLines = 0;
-  bool seen[32] = {};
+  bool seen[64] = {};
   for (const std::string &line : splitLines(text)) {
     CHECK(line.empty() || line[0] == '#');
     CHECK(line.size() <= 96);
     size_t idx;
     if (isSettingLine(line, &idx)) {
+      CHECK(idx < sizeof seen);
+      if (idx >= sizeof seen) continue;
       settingLines++;
       CHECK(!seen[idx]);
       seen[idx] = true;
@@ -1717,7 +1744,7 @@ void testBackupWifiSettings() {
   Settings has;
   snprintf(has.wifiBackupSsid, sizeof has.wifiBackupSsid, "Phone");
   snprintf(has.wifiBackupPassword, sizeof has.wifiBackupPassword, "pw");
-  has.userSet |= (1u << idx("wifi_backup_ssid")) | (1u << idx("wifi_backup_password"));
+  has.userSet |= (1ull << idx("wifi_backup_ssid")) | (1ull << idx("wifi_backup_password"));
   const Applied gone = apply("wifi_backup_ssid =\nwifi_backup_password =", has);
   CHECK_STR(gone.s.wifiBackupSsid, "");
   CHECK_STR(gone.s.wifiBackupPassword, "");
@@ -1949,7 +1976,7 @@ void testBatteryCalibrationSetting() {
   // forgetting it brings the default back (a build can have its own: here the pristine one)
   Settings set;
   set.batteryCalibration = 1.03f;
-  set.userSet |= 1u << idx("battery_calibration");
+  set.userSet |= 1ull << idx("battery_calibration");
   const Applied gone = apply("battery_calibration =", set);
   CHECK_NEAR(gone.s.batteryCalibration, 1.0, 1e-9);
   CHECK(gone.r.cleared == 1 && !settingIsUserSet(gone.s, idx("battery_calibration")));
@@ -2951,11 +2978,13 @@ void testPowerLog() {
       if (h == name) return true;
     return false;
   };
-  for (const char *setting : {"wifi", "wifi_mode", "wifi_power_save", "cpu_idle_mhz", "spotify_live", "console", "battery_capacity_mah"}) {
+  for (const char *setting : {"wifi", "wifi_mode", "wifi_power_save", "cpu_idle_mhz", "spotify_live", "console", "light_sleep",
+                              "battery_capacity_mah"}) {
     if (!has(setting) || idx(setting) == (size_t)-1) printf("  power-log.csv: no column for the setting %s\n", setting);
     CHECK(has(setting) && idx(setting) != (size_t)-1);
   }
-  for (const char *reading : {"test", "firmware", "date", "time", "battery_v", "battery_pct", "left", "pct_per_hour", "over_min"}) CHECK(has(reading));
+  for (const char *reading : {"test", "firmware", "date", "time", "battery_v", "battery_pct", "left", "pct_per_hour", "over_min", "asleep_pct"})
+    CHECK(has(reading));
 
   // the check can fail: a made-up sheet, right and then wrong in one way at a time
   const std::string doc = "`test` `wifi_mode` `cpu_idle_mhz` `battery_pct` `notes`";
@@ -2980,7 +3009,8 @@ void testPowerLog() {
 
 // The settings and the readings of the README's own examples ("Logging a battery run").
 Settings sampleLogSettings() {
-  return apply("wifi_mode = sync\nwifi_power_save = max\ncpu_idle_mhz = 20\nspotify_live = off\nconsole = auto\nbattery_capacity_mah = 2500\n").s;
+  return apply("wifi_mode = sync\nwifi_power_save = max\ncpu_idle_mhz = 20\nspotify_live = off\nconsole = auto\nlight_sleep = on\n"
+               "battery_capacity_mah = 2500\n").s;
 }
 
 powerlog::Reading sampleReading(const Settings &s) {
@@ -3002,6 +3032,7 @@ powerlog::Reading sampleReading(const Settings &s) {
   r.radioSync = true;
   r.radioOnPermille = 8;
   r.radioSessions = 96;
+  r.asleepPermille = 785;
   r.batteryPresent = true;
   r.batteryVolts = 4.092f;
   r.charge = CHARGE_DISCHARGING;
@@ -3065,10 +3096,11 @@ void testPowerLogLine() {
   const Settings s = sampleLogSettings();
   const Reading r = sampleReading(s);
   const std::string line = logLine(r);
-  CHECK_STR(line.c_str(), ",1.7 3f9a12c,on,sync,max,20,off,auto,2500,,playing,2026-10-08,14:30,0d 3h 12m,20 idle,0.8,96,4.092,87.0,discharging,"
-                          "3 d 0 h,1.20,300,30.0,,187,11520,2,61,\r\n");
+  CHECK_STR(line.c_str(), ",1.7 3f9a12c,on,sync,max,20,off,auto,on,2500,,playing,2026-10-08,14:30,0d 3h 12m,20 idle,0.8,96,78.5,4.092,87.0,"
+                          "discharging,3 d 0 h,1.20,300,30.0,,187,11520,2,61,\r\n");
   CHECK(line.size() >= 140 && line.size() <= 170);  // (the README's "3,000 to 7,000 lines" rests on a line of about this length)
-  for (const char *example : {"`0d 3h 12m`", "`20 idle`", "`0.8` and `96`", "`4.092` and `87.0`", "`3 d 0 h`, `1.20` and `300`", "`2026-10-08`", "`14:30`"}) {
+  for (const char *example : {"`0d 3h 12m`", "`20 idle`", "`0.8` and `96`", "`78.5`", "`4.092` and `87.0`", "`3 d 0 h`, `1.20` and `300`", "`2026-10-08`",
+                              "`14:30`"}) {
     if (readme.find(example) == std::string::npos) printf("  the README no longer gives %s as an example\n", example);
     CHECK(readme.find(example) != std::string::npos);
   }
@@ -3095,7 +3127,8 @@ void testPowerLogLine() {
       for (int save : {WIFISAVE_NORMAL, WIFISAVE_MAX})
         for (int idle : {CPUIDLE_OFF, CPUIDLE_80, CPUIDLE_40, CPUIDLE_20})
           for (int live = 0; live < 2; live++)
-            for (int console : {CONSOLE_ON, CONSOLE_AUTO, CONSOLE_OFF}) {
+            for (int console : {CONSOLE_ON, CONSOLE_AUTO, CONSOLE_OFF})
+              for (int sleep = 0; sleep < 2; sleep++) {
               Settings t;
               t.wifi = wifi != 0;
               t.wifiMode = (uint8_t)mode;
@@ -3103,11 +3136,12 @@ void testPowerLogLine() {
               t.cpuIdle = (uint8_t)idle;
               t.spotifyLive = live != 0;
               t.console = (uint8_t)console;
+              t.lightSleep = sleep != 0;
               const std::string l = logLine(sampleReading(t));
               const std::vector<std::string> f = logFields(l);
               CHECK(f.size() == (size_t)kColumnCount);
               if (f.size() != (size_t)kColumnCount) continue;
-              for (const char *name : {"wifi", "wifi_mode", "wifi_power_save", "cpu_idle_mhz", "spotify_live", "console"}) {
+              for (const char *name : {"wifi", "wifi_mode", "wifi_power_save", "cpu_idle_mhz", "spotify_live", "console", "light_sleep"}) {
                 const std::string &text = f[(size_t)col(name)];
                 CHECK(!text.empty() && text == fmt(t, idx(name)));
                 const Applied back = apply(std::string(name) + " = " + text + "\n", Settings());
@@ -3115,12 +3149,14 @@ void testPowerLogLine() {
                 CHECK(back.r.problems() == 0 && fmt(back.s, idx(name)) == fmt(t, idx(name)));
               }
               CHECK(f[C_BATTERY_CAPACITY_MAH].empty());  // (no capacity set in these)
+              CHECK(f[C_ASLEEP_PCT] == (sleep ? "78.5" : ""));  // the share asleep only with light sleep on, as the Sleep line
               all += l;
               combos++;
             }
-  CHECK(combos == 192);
+  CHECK(combos == 384);
   CHECK(powerLogProblems(all, readme, true) == 0);
   CHECK(col("wifi") == C_WIFI && col("console") == C_CONSOLE && col("cpu_idle_mhz") == C_CPU_IDLE_MHZ && col("notes") == C_NOTES);
+  CHECK(col("light_sleep") == C_LIGHT_SLEEP && col("asleep_pct") == C_ASLEEP_PCT);
   {  // settingText: by the setting's name, and nothing for a name that is no setting
     char t[16] = "x";
     settingText(s, "wifi_mode", t, sizeof t);
@@ -3135,9 +3171,9 @@ void testPowerLogLine() {
     const std::vector<std::string> f = logFields(logLine(Reading()));
     CHECK(f.size() == (size_t)kColumnCount);
     if (f.size() == (size_t)kColumnCount) {
-      for (int c : {C_TEST, C_FIRMWARE, C_WIFI, C_WIFI_MODE, C_WIFI_POWER_SAVE, C_CPU_IDLE_MHZ, C_SPOTIFY_LIVE, C_CONSOLE, C_BATTERY_CAPACITY_MAH,
-                    C_CARD, C_MUSIC, C_DATE, C_TIME, C_CLOCK_SHOWN, C_RADIO_ON_PCT, C_RADIO_SESSIONS, C_BATTERY_V, C_BATTERY_PCT, C_LEFT,
-                    C_PCT_PER_HOUR, C_OVER_MIN, C_CLOCK_MA, C_METER_MA, C_NOTES}) {
+      for (int c : {C_TEST, C_FIRMWARE, C_WIFI, C_WIFI_MODE, C_WIFI_POWER_SAVE, C_CPU_IDLE_MHZ, C_SPOTIFY_LIVE, C_CONSOLE, C_LIGHT_SLEEP,
+                    C_BATTERY_CAPACITY_MAH, C_CARD, C_MUSIC, C_DATE, C_TIME, C_CLOCK_SHOWN, C_RADIO_ON_PCT, C_RADIO_SESSIONS, C_ASLEEP_PCT,
+                    C_BATTERY_V, C_BATTERY_PCT, C_LEFT, C_PCT_PER_HOUR, C_OVER_MIN, C_CLOCK_MA, C_METER_MA, C_NOTES}) {
         if (!f[(size_t)c].empty()) printf("  %s is '%s' for a reading that knows nothing\n", columnName(c), f[(size_t)c].c_str());
         CHECK(f[(size_t)c].empty());
       }
@@ -3357,7 +3393,7 @@ void testPowerLogLine() {
     t.framesWorstMs = -2147483647 - 1;
     const std::string l = logLine(t);
     printf("  a line is %zu bytes for the README's example and %zu at the most (the buffers hold %zu)\n", line.size(), l.size(), kMaxLine);
-    CHECK(!l.empty() && l.size() < kMaxLine / 2 && logFields(l).size() == (size_t)kColumnCount);
+    CHECK(!l.empty() && l.size() + 128 < kMaxLine && logFields(l).size() == (size_t)kColumnCount);  // (room for a few more columns)
     CHECK(powerLogProblems(std::string(head) + l, readme, true) == 0);
     CHECK(logField(t, C_CLOCK_SHOWN) == "240 a reason that is far" && logField(t, C_NOTES).size() == 31);  // long texts are cut, the line stays whole
   }

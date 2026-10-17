@@ -58,12 +58,13 @@ const char *const kOldFile = "powerlog.old";  // the ones before them
 enum Column : uint8_t {
   C_TEST = 0,  // (not known to the clock: the name of the run)
   C_FIRMWARE,
-  C_WIFI,  // the six settings a run is made with, by the names and in the words of the settings file
+  C_WIFI,  // the seven settings a run is made with, by the names and in the words of the settings file
   C_WIFI_MODE,
   C_WIFI_POWER_SAVE,
   C_CPU_IDLE_MHZ,
   C_SPOTIFY_LIVE,
   C_CONSOLE,
+  C_LIGHT_SLEEP,
   C_BATTERY_CAPACITY_MAH,
   C_CARD,  // (not known: the card is only looked at while the clock starts)
   C_MUSIC,
@@ -73,6 +74,7 @@ enum Column : uint8_t {
   C_CLOCK_SHOWN,
   C_RADIO_ON_PCT,
   C_RADIO_SESSIONS,
+  C_ASLEEP_PCT,
   C_BATTERY_V,
   C_BATTERY_PCT,
   C_BATTERY_STATE,
@@ -91,12 +93,12 @@ enum Column : uint8_t {
 
 inline const char *columnName(int c) {
   static const char *const names[] = {
-      "test",          "firmware",       "wifi",       "wifi_mode",    "wifi_power_save", "cpu_idle_mhz",
-      "spotify_live",  "console",        "battery_capacity_mah",       "card",            "music",
-      "date",          "time",           "uptime",     "clock_shown",  "radio_on_pct",    "radio_sessions",
-      "battery_v",     "battery_pct",    "battery_state",              "left",            "pct_per_hour",
-      "over_min",      "clock_ma",       "meter_ma",   "free_kb",      "frames_sent",     "frames_late",
-      "frames_worst_ms", "notes"};
+      "test",           "firmware",     "wifi",        "wifi_mode",  "wifi_power_save", "cpu_idle_mhz",
+      "spotify_live",   "console",      "light_sleep", "battery_capacity_mah",           "card",
+      "music",          "date",         "time",        "uptime",     "clock_shown",     "radio_on_pct",
+      "radio_sessions", "asleep_pct",   "battery_v",   "battery_pct", "battery_state",  "left",
+      "pct_per_hour",   "over_min",     "clock_ma",    "meter_ma",   "free_kb",         "frames_sent",
+      "frames_late",    "frames_worst_ms", "notes"};
   static_assert(sizeof names / sizeof names[0] == kColumnCount, "one name for each column");
   return (c >= 0 && c < kColumnCount) ? names[c] : "";
 }
@@ -118,6 +120,8 @@ struct Reading {
   bool radioSync = false;  // wifi_mode = sync with the radio in use: the two figures below mean something
   uint16_t radioOnPermille = 0;
   uint32_t radioSessions = 0;
+
+  uint16_t asleepPermille = 0;  // light_sleep = on: the share of the time asleep (light_sleep.h), in tenths of a percent
 
   bool batteryPresent = false;
   float batteryVolts = 0;
@@ -201,7 +205,7 @@ inline size_t formatLine(const Reading &r, char *out, size_t cap) {
   // which firmware, which settings
   snprintf(f[C_FIRMWARE], kField, "%s%s%s", r.version, r.buildId[0] ? " " : "", r.buildId);
   if (r.settings) {
-    for (int c : {C_WIFI, C_WIFI_MODE, C_WIFI_POWER_SAVE, C_CPU_IDLE_MHZ, C_SPOTIFY_LIVE, C_CONSOLE}) {
+    for (int c : {C_WIFI, C_WIFI_MODE, C_WIFI_POWER_SAVE, C_CPU_IDLE_MHZ, C_SPOTIFY_LIVE, C_CONSOLE, C_LIGHT_SLEEP}) {
       settingText(*r.settings, columnName(c), f[c], kField);  // (the column is named after its setting)
     }
     // (0 means "not known", and what is not known is left empty)
@@ -222,11 +226,15 @@ inline size_t formatLine(const Reading &r, char *out, size_t cap) {
   snprintf(f[C_UPTIME], kField, "%ud %uh %um", (unsigned)(r.uptimeSec / 86400), (unsigned)((r.uptimeSec / 3600) % 24),
            (unsigned)((r.uptimeSec / 60) % 60));
 
-  // the CPU clock and the radio
+  // the CPU clock, the radio and the light sleep
   if (r.cpuMhz > 0) snprintf(f[C_CLOCK_SHOWN], kField, "%d%s%.20s", r.cpuMhz % 1000, r.clockReason[0] ? " " : "", r.clockReason);
   if (r.radioSync) {
     snprintf(f[C_RADIO_ON_PCT], kField, "%.1f", r.radioOnPermille / 10.0);
     snprintf(f[C_RADIO_SESSIONS], kField, "%u", (unsigned)r.radioSessions);
+  }
+  if (r.settings && r.settings->lightSleep) {  // (as the Sleep line: only with light sleep on)
+    const unsigned p = r.asleepPermille > 1000 ? 1000 : r.asleepPermille;
+    snprintf(f[C_ASLEEP_PCT], kField, "%u.%u", p / 10, p % 10);
   }
 
   // the battery, and what the runtime estimate makes of it (the Left and Current lines of the pages)

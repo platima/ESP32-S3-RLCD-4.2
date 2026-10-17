@@ -1418,6 +1418,7 @@ int main() {
     const char *power[] = {
         // (the same clock as on the Info page: 87 % of a 2500 mAh cell, drawing 30 mA with WiFi always on)
         "Power     80 MHz, WiFi saver normal",
+        "Sleep     100.0 % of the time (now: button pressed)",  // (light_sleep = on: the widest the row gets)
         "Battery   4.092 V = 87.0 % on the curve",
         "Left      3 d 0 h (1.20 %/h over 300 min)",
         "Current   about 30.0 mA (of 2500 mAh)",
@@ -1428,8 +1429,8 @@ int main() {
         "          line 9: unknown setting 'colour'",
         "Units     metric, 24 h, ISO date, week numbers",
     };
-    m.infoCount = 10;
-    for (int i = 0; i < 10; i++) setStr(m.info[i], UI_INFO_LINE_LEN, power[i]);
+    m.infoCount = 11;
+    for (int i = 0; i < 11; i++) setStr(m.info[i], UI_INFO_LINE_LEN, power[i]);
   }
   snapshot("power", m);
   u8g2_ClearBuffer(g_u);

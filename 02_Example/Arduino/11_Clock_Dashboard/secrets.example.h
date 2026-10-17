@@ -58,6 +58,7 @@
 // #define CPU_IDLE_MHZ 40                // the clock while the radio is off: 0 (= CPU_MHZ), 80, 40 or 20 (untried: see config.h)
 // #define CONSOLE_MODE "auto"            // the USB serial console: "on", "auto" (only while a computer is on the USB port) or "off" (README: Saving power)
 // #define POWER_LOG 1                    // 1 = a line of power readings in the clock's flash every 10 minutes, copied to an SD card at start-up (README: Logging a battery run)
+// #define LIGHT_SLEEP 1                  // 1 = light sleep between the frames while the radio and the console are off (untried: README: Light sleep)
 // #define SPOTIFY_ENABLED 0              // 0 = off, even with a Client ID
 // #define SPOTIFY_LIVE 0                 // with WIFI_MODE "sync": 0 = the radio sleeps while music plays, one look a track (1 = it stays on)
 

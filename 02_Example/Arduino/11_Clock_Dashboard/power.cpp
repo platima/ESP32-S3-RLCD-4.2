@@ -5,7 +5,9 @@
 #include <driver/rtc_io.h>
 #include <esp_rom_gpio.h>
 #include <esp_sleep.h>
+#include <esp_timer.h>
 #include <soc/gpio_sig_map.h>
+#include <sys/time.h>
 
 #include "button_edges.h"
 #include "config.h"
@@ -39,7 +41,44 @@ void driveLevel(const Pad &p) {
   gpio_set_level((gpio_num_t)p.pin, p.level);
 }
 
+// The SDK's side of a nap (light_sleep.h, napOnce()).
+struct IdfNap {
+  void wakeOnButtons(bool on) { buttonEdgesSleep(on); }
+  // down now, or a change recorded before the interrupts were held off that the loop has not taken yet
+  bool buttonDown() { return digitalRead(PIN_KEY) == LOW || digitalRead(PIN_BOOT) == LOW || buttonEdgesPending(); }
+  int sleep(int32_t us) {
+    esp_sleep_enable_timer_wakeup((uint64_t)us);
+    esp_sleep_enable_gpio_wakeup();  // (the levels are set on the pins by wakeOnButtons)
+    const esp_err_t err = esp_light_sleep_start();
+    cause_ = esp_sleep_get_wakeup_cause();
+    // neither stays armed: the deep sleep of the shutdown arms its own, and BOOT must not wake the chip from that
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_GPIO);
+    return (int)err;
+  }
+  bool wokeByButton() const { return cause_ == ESP_SLEEP_WAKEUP_GPIO; }
+  int64_t monoUs() { return esp_timer_get_time(); }
+  int64_t wallUs() {
+    struct timeval tv;
+    gettimeofday(&tv, nullptr);
+    return (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
+  }
+  void shiftWallUs(int64_t d) {
+    const int64_t t = wallUs() + d;
+    struct timeval tv;
+    tv.tv_sec = (time_t)(t / 1000000);
+    tv.tv_usec = (suseconds_t)(t % 1000000);
+    settimeofday(&tv, nullptr);
+  }
+  esp_sleep_wakeup_cause_t cause_ = ESP_SLEEP_WAKEUP_UNDEFINED;
+};
+
 }  // namespace
+
+lightsleep::Nap powerLightSleep(int32_t us, lightsleep::WallFix &fix) {
+  IdfNap hw;
+  return lightsleep::napOnce(hw, fix, us);
+}
 
 void powerSetCpuMhz(int mhz) {
   if ((int)getCpuFrequencyMhz() != mhz) setCpuFrequencyMhz((uint32_t)mhz);

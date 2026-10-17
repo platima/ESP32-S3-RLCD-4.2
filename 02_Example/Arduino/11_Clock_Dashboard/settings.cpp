@@ -191,12 +191,21 @@ const Def kDefs[] = {
      "with an SD card in copies the log to the card as ESP32-S3-RLCD-PowerLog.csv.  The newest\n"
      "0.5 to 1 MB are kept (weeks).  The first time, the flash partition for it is formatted.\n"
      "See the README."},
+    {"light_sleep", "lsleep", T_BOOL, OFF(lightSleep), 0, 0, 0, nullptr, false, "Power",
+     "on or off.  On: between the frames, once a second, the processor goes into light sleep instead\n"
+     "of idling, whenever nothing needs it: the radio off (wifi = off, or between the syncs of the\n"
+     "sync mode), the console shut down (console = auto or off), no button pressed for 8 seconds.\n"
+     "KEY and BOOT wake it at once.  While it sleeps its clock runs on an RC oscillator in the chip,\n"
+     "less exact than the crystal: the hourly network time puts it right, and without WiFi nothing\n"
+     "does.  Not yet tried on the board; see the README."},
     {"weather_interval_min", "wxint", T_INT, OFF(weatherIntervalMin), 0, 5, 240, nullptr, false, "Weather",
      "Minutes between weather updates, 5 to 240 (default 15)."},
 };
 const size_t kDefCount = sizeof kDefs / sizeof kDefs[0];
-// (32 settings fill the mask: the next one needs a wider `userSet`, and wider shifts where it is used)
-static_assert(sizeof kDefs / sizeof kDefs[0] <= 32, "userSet is a 32 bit mask");
+static_assert(sizeof kDefs / sizeof kDefs[0] <= 64, "userSet is a 64 bit mask");
+
+// The bit of setting i in Settings::userSet.
+inline uint64_t userBit(size_t i) { return (uint64_t)1 << i; }
 
 struct Alias {
   const char *from;
@@ -600,7 +609,7 @@ void restoreDefault(Settings &s, const Settings &defaults, const Def &d, size_t 
                      : d.type == T_FLOAT  ? sizeof(float)
                                           : sizeof(double);
   memcpy(fieldPtr(s, d), fieldPtr(defaults, d), len);
-  s.userSet &= ~(1u << i);
+  s.userSet &= ~userBit(i);
 }
 
 ApplyResult applyParsed(Settings &s, const Settings &defaults, const char *key, const char *raw, bool quoted,
@@ -613,7 +622,7 @@ ApplyResult applyParsed(Settings &s, const Settings &defaults, const char *key, 
   }
   char before[100];
   formatValue(s, *d, before, sizeof before);
-  const bool wasSet = (s.userSet >> i) & 1u;
+  const bool wasSet = (s.userSet & userBit(i)) != 0;
 
   if (!raw[0] && !quoted) {  // "key =" forgets the saved setting
     restoreDefault(s, defaults, *d, i);
@@ -626,7 +635,7 @@ ApplyResult applyParsed(Settings &s, const Settings &defaults, const char *key, 
     return ApplyResult::BadValue;
   }
   s = trial;
-  s.userSet |= 1u << i;
+  s.userSet |= userBit(i);
   char after[100];
   formatValue(s, *d, after, sizeof after);
   return strcmp(before, after) != 0 ? ApplyResult::Changed : ApplyResult::Unchanged;
@@ -641,7 +650,7 @@ size_t settingCount() { return kDefCount; }
 const char *settingKey(size_t i) { return i < kDefCount ? kDefs[i].key : ""; }
 const char *settingNvsKey(size_t i) { return i < kDefCount ? kDefs[i].nvs : ""; }
 bool settingIsSecret(size_t i) { return i < kDefCount && kDefs[i].secret; }
-bool settingIsUserSet(const Settings &s, size_t i) { return i < kDefCount && ((s.userSet >> i) & 1u); }
+bool settingIsUserSet(const Settings &s, size_t i) { return i < kDefCount && (s.userSet & userBit(i)) != 0; }
 
 bool formatSetting(const Settings &s, size_t i, char *out, size_t cap) {
   return i < kDefCount && formatValue(s, kDefs[i], out, cap);
@@ -657,7 +666,7 @@ bool applyStoredSetting(Settings &s, size_t i, const char *value, char *err, siz
   Settings trial = s;
   if (!setFromText(trial, kDefs[i], value, err, errCap)) return false;
   s = trial;
-  s.userSet |= 1u << i;
+  s.userSet |= userBit(i);
   return true;
 }
 

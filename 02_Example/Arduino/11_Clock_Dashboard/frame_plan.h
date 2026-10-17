@@ -75,6 +75,25 @@ class FramePlanner {
     return st;  // IDLE
   }
 
+  // How long the loop may leave the planner alone (light_sleep.h): the time until next() asks for more than a
+  // nap, PREPARE or SEND, if nothing is forced meanwhile.  0 when it asks for something now.
+  int32_t idleUs(time_t sec, int32_t usec) const {
+    const int32_t usToNext = 1000000 - usec;
+    const int32_t sendLead = (int32_t)sendCostUs_ + latencyUs_;
+    const int32_t drawLead = sendLead + (int32_t)drawCostUs_ + kMarginUs;
+    if (prepared_) {
+      if (preparedSec_ <= sec || preparedSec_ > sec + 1) return 0;  // due, or the clock went backwards (next() starts over)
+      const int32_t waitUs = usToNext - sendLead;
+      return waitUs > kSpinUs ? waitUs - kSpinUs : 0;  // SEND, once the wait is down to what is spun
+    }
+    if (lastSentSec_ == sec + 1) {  // the coming second is out already: the one after it is prepared in the next second
+      const int32_t into = 1000000 - drawLead;
+      return usToNext + (into > 0 ? into : 0);
+    }
+    if (lastSentSec_ != sec) return 0;  // behind: DRAW_NOW
+    return usToNext > drawLead ? usToNext - drawLead : 0;
+  }
+
   // May slow work (I2C sensors, battery) run now?  Never close to a tick.
   bool quiet(int32_t usec) const { return !prepared_ && 1000000 - usec > kQuietUs; }
 

@@ -19,7 +19,7 @@
 // Not semver: 1.0 was the first release, and the number goes up by hand with every batch of changes that is
 // handed over to run on a board (README: "Versions").  Two builds of one version are told apart by the build
 // id next to it on the System info page, which changes whenever the program does.
-#define APP_VERSION "1.9"
+#define APP_VERSION "1.10"
 
 // The settings file the clock looks for in the root of the SD card, and writes (with every
 // setting explained) when the card has none.  Upper or lower case, it is FAT.
@@ -257,6 +257,15 @@
 // second of flash writing (README: "Logging a battery run").  Not yet tried on the board.
 #ifndef POWER_LOG
 #define POWER_LOG 0
+#endif
+
+// 1 = between the frames, once a second, the processor goes into light sleep instead of idling, whenever nothing needs
+// it awake: the radio off (WIFI_ENABLED 0, or between the syncs of WIFI_MODE "sync"), the console shut down
+// (CONSOLE_MODE "auto" or "off"), no button pressed for 8 seconds.  KEY and BOOT wake it at once.  While it sleeps its
+// clock runs on an RC oscillator inside the chip, calibrated before every sleep but less exact than the crystal: the
+// hourly network time puts it right, and without WiFi nothing does.  Not yet tried on the board (README: "Light sleep").
+#ifndef LIGHT_SLEEP
+#define LIGHT_SLEEP 0
 #endif
 
 // The audio chips on the board (a codec, a microphone ADC, an amplifier) are not used by the clock.  1 = at

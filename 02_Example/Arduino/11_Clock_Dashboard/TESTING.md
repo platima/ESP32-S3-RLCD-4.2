@@ -93,3 +93,19 @@ the analogue clock's outline (1.9) and both cubes with their buttons (1.8, 1.9).
 35. **Partly.** The newer screens on the real panel for contrast and legibility: the legend, the firmware update
     screen, the weather band with its moon and rain.
 36. **Partly.** The cubes: whether the frame rate looks smooth.
+
+## Light sleep (1.10)
+
+37. **Not yet.** `light_sleep = on`, with the settings of 24 (`wifi_mode = sync`, `cpu_idle_mhz = 20`, `console` auto
+    or off). Worth a run of its own in the log (the sheet's sixth line).
+    * The meter on USB (5 V, battery out), with it on and with it off, ten seconds after the last button press: the
+      estimate is about 15 mA (14 to 16) against the 21 mA of 24. The *Sleep* row of *Power and settings* should say
+      some 75 to 80 % at 20 MHz once the radio has been off for a while (it counts from the start).
+    * The *Frames* line after a day: no more late frames than in 16 (7 in three and a half days, the worst 307 ms).
+    * Buttons: every press of KEY and BOOT answered as before, single, double and long, also the first press after a
+      quiet minute (that one wakes the chip); KEY held for five seconds still restarts the clock.
+    * The time overnight: the clock against a phone in the evening and in the morning, and the *Drift* line on
+      *Power and settings* after a day of hourly syncs, against what it says with light sleep off. (With WiFi off
+      nothing corrects the clock: try that only once the drift with sync mode is known.)
+    * The low-battery shutdown at the end of a run with light sleep (12) still wakes by KEY and by the five-minute
+      timer, and not by BOOT. (`sleeptest` cannot show it: the console it needs keeps the chip from light sleep.)
