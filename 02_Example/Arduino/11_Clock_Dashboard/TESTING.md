@@ -39,14 +39,19 @@ the analogue clock's outline (1.9) and both cubes with their buttons (1.8, 1.9).
 11. **Problem.** How close the estimate comes. Just after a charge it said 8 to 16 days; the cell went from 4.20 V to
     3.71 V in about 57 hours. The voltage barely moves for the first 12 hours after a charge (4.20 to 4.15 V took 12.8
     hours, the next 50 mV took 5.8), and the battery curve counts that stretch as 5 %, so the estimate takes the slow
-    start for the rate of the whole cell. The curve is to be corrected from the log.
-12. **Not yet.** The low-battery blink, the battery-empty screen and the deep-sleep shutdown: the wake by timer and by
-    KEY, the 3-second override, the current while asleep (`sleeptest` in the serial console). The cell has not been
-    run below 3.69 V yet.
+    start for the rate of the whole cell. The curve also looks wrong at the bottom (see 14). It is to be corrected
+    from a log that runs to the shutdown (12).
+12. **Not yet.** A run down to the shutdown: off the charger, with the log on, until the clock shuts itself down at
+    3.30 V. It gives the real runtime and the bottom of the battery curve, and tries the low-battery blink, the
+    battery-empty screen and the shutdown (the wake by timer and by KEY, the 3-second override). Charge it within a
+    day of the shutdown: what the board draws while the clock sleeps has not been measured (`sleeptest` in the serial
+    console would). The cell has not been run below 3.69 V yet.
 13. **Partly.** The five battery runs (stock on WiFi, stock without WiFi, a middle ground, 20 MHz on WiFi, 20 MHz
     without WiFi). Only the fourth has been logged (the settings above): 4.20 to 3.71 V in about 57 hours.
-14. **Not yet.** The cell's real capacity: the mWh a USB meter counts for a charge from low to full. (On 14 October a
-    charge from 3.69 V to *full* took under two hours, which is quick for 3400 mAh.)
+14. **Partly.** Where the cell really is at 3.7 V. It is a good-quality 3400 mAh cell (about 12 Wh). At the draw
+    measured in 24 (about 105 mW from USB; somewhat less from the cell, which skips the charger's converter) it should
+    last roughly five days, yet 4.20 to 3.71 V took only 57 hours. So at 3.7 V this cell is probably still about half
+    full, where the gauge says 15 to 20 %. That is an estimate; the run in 12 will tell.
 
 ## Power saving
 
@@ -64,8 +69,10 @@ the analogue clock's outline (1.9) and both cubes with their buttons (1.8, 1.9).
     `set` command. (`auto` has run for days without trouble.)
 22. **Not yet.** A `cpu_mhz` change from the settings file: the start does not hang.
 23. **Not yet.** The audio chips switched off: no noise, and the difference on a meter.
-24. **Not yet.** The current, by a meter: with the battery out and the clock on USB as it runs now, and during
-    `sleeptest`.
+24. **Partly.** The current, by a USB meter (5 V) with the battery out and the settings above, console off: 21.1 to
+    21.4 mA at the 20 MHz idle clock (an inverted screen makes no difference worth counting), about 29 mA at 80 MHz
+    after a button press, 33 to 36 mA at 80 MHz with the radio on. With the radio on about 2 % of the time, the idle
+    clock is nearly all of the energy. Not yet: the current during `sleeptest` (the board without the processor).
 
 ## Power log
 
