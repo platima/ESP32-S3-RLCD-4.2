@@ -1,7 +1,7 @@
 # 11_Clock_Dashboard
 
 A desk clock for the Waveshare ESP32-S3-RLCD-4.2: it joins your WiFi, sets the time over NTP, works out the
-time zone (including daylight saving) by itself, and shows everything on the reflective LCD. Version **1.9**
+time zone (including daylight saving) by itself, and shows everything on the reflective LCD. Version **1.10**
 ([what changed](#versions)).
 
 <img src="docs/dashboard.png" alt="Dashboard" width="560">
@@ -417,7 +417,12 @@ driver does not do.
 ## Battery
 
 Reads the divider on GPIO4 (x3), averages 16 ADC samples, smooths the result, and maps the voltage to a charge level
-with a lithium discharge curve rather than a straight line. The gauge blinks below `BATTERY_LOW_PERCENT` (20) and stops
+with a discharge curve measured in this clock: a 3400 mAh 18650 run from a full charge until the clock shut itself down
+at 3.30 V, 81 hours at a steady load, each point being the share of that run still to go when the cell got there
+(`calc.h`; the readings are in `tools/tests/fixtures/rundown-2026-10.csv`). Half charge is 3.78 V, 20 % is 3.58 V, and
+below 3.46 V only 5 % is left. (The generic curve before it, from 1.0 to 1.9, put 3.70 V at 12 % where that cell still
+had 39 %, so a clock recharged at its "20 %" was really about half full.) A cell of another make or chemistry can sit a
+little higher or lower. The gauge blinks below `BATTERY_LOW_PERCENT` (20) and stops
 once it has recovered to 23 so it cannot flicker around the threshold; it does not blink while the battery is being
 charged.
 
@@ -531,19 +536,19 @@ The *System info* page has a **Left** line, and the *Power and settings* page th
 </p>
 
 ```
-Battery   4.09 V  87%  discharging -0.1 mV/min
+Battery   4.12 V  87%  discharging -0.1 mV/min
 Left      3 d 0 h (1.20 %/h over 300 min)
 Current   about 30.0 mA (of 2500 mAh)          <- when battery_capacity_mah is set
 ```
 
 * The voltage is turned into a percentage through the discharge curve *first*. The same drain in mA is a very different
-  number of millivolts per minute depending on where on the curve the cell is (about 2 mV per percent in the middle, 15
-  and more near empty), so a trend in volts means little (the same load can read *-4.4 mV/min* near the top of the curve
-  and *-2.1 mV/min* lower down); a trend in percent is one steady rate all the way down.
+  number of millivolts per minute depending on where on the curve the cell is (5 to 6 mV per percent near the top, 13
+  just over 4 V, 5 to 9 in the middle, 37 in the last 5 %), so a trend in volts means little; a trend in percent is one
+  steady rate all the way down.
 * It is worked out whenever no charger shows (the gauge has neither the bolt nor the tick), which after a start on the
   battery is from the first minute: see *What that means for the runtime estimate* above for the one case that takes
   longer, a clock unplugged from a charger that had finished.
-* Above 4.20 V the gauge says 100 % and stays there, but the estimate goes on with the same 10 mV to the percent: a
+* Above 4.20 V the gauge says 100 % and stays there, but the estimate goes on with the same 5.2 mV to the percent: a
   cell just off the charger reads a little over 4.20 V (4.21 to 4.22 V on the board this was written on), and its
   coming down from there is drain like any other.
 * Readings are boiled down to one point per five minutes (their median, so the dips of WiFi transmissions vanish), the
@@ -552,17 +557,21 @@ Current   about 30.0 mA (of 2500 mAh)          <- when battery_capacity_mah is s
   50 minutes after a start in all.
 * The rate is a straight line through the points of the last **2 to 8 hours: long enough for the cell to lose about 20 %
   in it**, so a fast drain (a small cell, Spotify playing) is judged over about two hours and a slow one over most of a
-  day. Longer is better because the middle of the curve is nearly flat: a few millivolts there are several percent, so a
-  30 minute window chased noise (it was off by 60 % or more one time in ten in simulation). The page says how many
-  minutes the figure rests on.
+  day. Longer is better because a few millivolts are a percent or more, so a 30 minute window chased noise (it was off
+  by 60 % or more one time in ten in simulation). The page says how many minutes the figure rests on.
 * "Hours left" is the percent above the shutdown voltage divided by that rate: it promises the time at the *average*
   load of the window, the best guess when the load varies. It cannot know what you will do next (turn WiFi off and the
   real answer changes at once; the estimate follows over the next hours).
-* **How good is it?** `tools/tests/battery_sim.cpp` simulates whole discharges (a cell model with internal resistance,
+* **How good is it on the run the curve came from?** Replayed through the estimator (`test_features`), from the third
+  hour on 72 of 73 hourly figures were within 15 % of the time the cell really had left, 4 % out on average. In the
+  first three hours off the charger the figure is **short** (a quarter to three quarters of the truth): the cell sheds
+  what is left of the charge faster than it drains later. The generic curve, replayed the same way, was within 15 % for
+  11 of the 73 and up to three times too long.
+* **And in general?** `tools/tests/battery_sim.cpp` simulates whole discharges (a cell model with internal resistance,
   ADC noise and WiFi dips; loads of 8 to 90 mA; capacities of 100 to 2500 mAh) and scores the estimate against the true
-  time left: in steady drains the typical (median) error was **4 to 16 %** and nine in ten estimates were within **7 to
-  41 %**; with a load that changes every couple of hours it was worse, as it must be. That is a model of a cell, not
-  your cell: treat the figure as a rough guide, most of all in the first hour or two.
+  time left: in steady drains the typical (median) error was **2 to 8 %** and nine in ten estimates were within **5 to
+  20 %**; with a load that changes every couple of hours it was worse, as it must be. That is a model of a cell, not
+  your cell: treat the figure as a rough guide, most of all in the first hours off the charger.
 
 ### The shutdown
 
@@ -814,7 +823,7 @@ the writing: with `power_log = on` it keeps the same readings itself, every ten 
 | `date`, `time`, `uptime` | When the reading was taken (`2026-10-08`, `14:30`), and the *Uptime* line (`0d 3h 12m`) |
 | `clock_shown` | *Power and settings*, the *Power* line: `20 idle`. Wait ten seconds after the last button press: a press takes the processor to full speed for eight |
 | `radio_on_pct`, `radio_sessions` | The *Radio* line (only with `wifi_mode = sync`): `0.8` and `96` |
-| `battery_v`, `battery_pct` | *Power and settings*, the *Battery* line: `4.092` and `87.0` |
+| `battery_v`, `battery_pct` | *Power and settings*, the *Battery* line: `4.117` and `87.0` |
 | `battery_state` | *System info*, the *Battery* line: `on battery?`, `discharging`, `charging` or `full` |
 | `left`, `pct_per_hour`, `over_min` | The *Left* line, `3 d 0 h (1.20 %/h over 300 min)`: `3 d 0 h`, `1.20` and `300`. Copy the time exactly: up to 1.5 the rate is shown with one decimal only, and the time is then the finer figure of the two |
 | `clock_ma`, `meter_ma` | The *Current* line (it needs `battery_capacity_mah` in the settings), and what a meter in the supply reads, if you have one |
@@ -1101,6 +1110,17 @@ build the sketch.
 `APP_VERSION` in `config.h`. It is not semver: the number goes up by hand with each batch of changes that is handed
 over to run on a board. The *System info* page shows it together with a build id, which tells two builds of one version
 apart (*Which build is running?* under [Updating the firmware from the SD card](#updating-the-firmware-from-the-sd-card)).
+
+**1.10** (21 October 2026)
+
+* **The battery curve is measured, not generic.** The board's owner ran a 3400 mAh cell from a full charge until the
+  clock shut itself down at 3.30 V (81 hours, `wifi_mode = sync` at 20 MHz), and the curve from voltage to percent is
+  now that run: half charge is 3.78 V, 20 % is 3.58 V. The old curve called 3.70 V 12 % where the cell still had 39 %,
+  so a clock recharged at its "20 %" was about half full; and it made so little of the first hours after a charge that
+  the runtime estimate said 8 to 16 days for a cell that lasts 3.4. Replayed through the estimator, from the third hour
+  off the charger on, 72 of 73 hourly figures were within 15 % of the time really left; in the first three hours the
+  figure is short. The gauge now reads lower from about 4.15 V down, and starts blinking (under 20 %) about 16 hours
+  before the shutdown instead of about 35. See [Battery](#battery). **Not yet run on the board.**
 
 **1.9** (8 October 2026)
 

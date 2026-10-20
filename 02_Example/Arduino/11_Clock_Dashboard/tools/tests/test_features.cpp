@@ -1177,10 +1177,10 @@ void testBatteryCurve() {
   }
   CHECK_NEAR(calc::batteryPercentF(4.30f), 100, 1e-6);
   CHECK_NEAR(calc::batteryPercentF(4.20f), 100, 1e-6);
-  CHECK_NEAR(calc::batteryPercentF(3.84f), 50, 1e-4);
+  CHECK_NEAR(calc::batteryPercentF(3.784f), 50, 1e-4);
   CHECK_NEAR(calc::batteryPercentF(3.27f), 0, 1e-4);
   CHECK_NEAR(calc::batteryPercentF(3.0f), 0, 1e-6);
-  CHECK_NEAR(calc::batteryPercentF(3.93f), 65 + 5 * (3.93 - 3.91) / (3.95 - 3.91), 0.01);  // 67.5, between 3.91 (65) and 3.95 (70)
+  CHECK_NEAR(calc::batteryPercentF(3.93f), 65 + 5 * (3.93 - 3.907) / (3.945 - 3.907), 0.01);  // 68.0, between 3.907 (65) and 3.945 (70)
   // monotonic, and the inverse really is one
   float last = -1;
   for (int mv = 3200; mv <= 4250; mv++) {
@@ -1198,16 +1198,16 @@ void testBatteryCurve() {
   // volts fall as percent falls
   for (int i = 1; i <= 100; i++) CHECK(calc::batteryVoltsForPercent((float)i) > calc::batteryVoltsForPercent((float)i - 1));
 
-  // The curve carried on above its top, for the runtime estimate: the same up to 4.20 V, then 10 mV to the percent
+  // The curve carried on above its top, for the runtime estimate: the same up to 4.20 V, then 5.2 mV to the percent
   // (seen on the board: 4.223 V on the charger, 4.210 V a minute after it), and it never stands still.
   for (int mv = 3000; mv <= 4200; mv++) CHECK(calc::batteryPercentOpen(mv / 1000.0f) == calc::batteryPercentF(mv / 1000.0f));
-  CHECK_NEAR(calc::batteryPercentOpen(4.21f), 101.0, 0.01);
-  CHECK_NEAR(calc::batteryPercentOpen(4.223f), 102.3, 0.01);
-  CHECK_NEAR(calc::batteryPercentOpen(4.30f), 110.0, 0.01);
+  CHECK_NEAR(calc::batteryPercentOpen(4.21f), 101.92, 0.01);
+  CHECK_NEAR(calc::batteryPercentOpen(4.223f), 104.42, 0.01);
+  CHECK_NEAR(calc::batteryPercentOpen(4.30f), 119.23, 0.01);
   float lastOpen = calc::batteryPercentOpen(4.150f);
   for (int mv = 4151; mv <= 4300; mv++) {
     const float p = calc::batteryPercentOpen(mv / 1000.0f);
-    CHECK(p > lastOpen && p - lastOpen < 0.11f);  // rising all the way, with no step where the two halves meet
+    CHECK(p > lastOpen && p - lastOpen < 0.2f);  // rising all the way, with no step where the two halves meet
     lastOpen = p;
   }
   {  // a cell read as 4.215 V that falls 3 mV an hour: the rate is seen, and the time left is that of a full cell, no more
@@ -1215,9 +1215,85 @@ void testBatteryCurve() {
     for (uint32_t t = 0; t <= 3 * 3600; t += 5) est.add(t, 4.215f - 0.003f * (float)t / 3600.0f);
     const battest::Estimate e = est.estimate(3.30f, 0);
     CHECK(e.state == battest::Estimate::READY && !e.unbounded);
-    CHECK_NEAR(e.pctPerHour, 0.30, 0.02);
-    CHECK_NEAR(e.levelPct, 100.6, 0.1);  // 4.206 V after three hours: over the top of the curve still
+    CHECK_NEAR(e.pctPerHour, 0.577, 0.03);  // (3 mV an hour at 5.2 mV to the percent)
+    CHECK_NEAR(e.levelPct, 101.15, 0.1);  // 4.206 V after three hours: over the top of the curve still
     CHECK_NEAR(e.hoursLeft, (100.0 - calc::batteryPercentF(3.30f)) / e.pctPerHour, 0.5);  // (0.6 % more would be two hours more)
+  }
+}
+
+// The run the battery curve was fitted to, replayed through the estimator: a 3400 mAh cell from a full charge until
+// the clock shut itself down at 3.30 V, a reading every ten minutes (fixtures/rundown-2026-10.csv, from the clock's
+// power log of 17 to 20 October 2026).  Between two lines the voltage is taken as a straight line, read every 5 s
+// as the clock does.  Each estimate is held against the time the cell really had left.
+void testBatteryEstimateReplay() {
+  section("battery estimate: the logged run down to the shutdown");
+  std::vector<std::pair<int, float>> pts;
+  {
+    const std::string csv = readFile("fixtures/rundown-2026-10.csv");
+    size_t at = csv.find('\n');  // (past the heading)
+    while (at != std::string::npos && at + 1 < csv.size()) {
+      const size_t next = csv.find('\n', at + 1);
+      int minute = 0;
+      float volts = 0;
+      if (sscanf(csv.c_str() + at + 1, "%d,%f", &minute, &volts) == 2) pts.push_back({minute, volts});
+      at = next;
+    }
+  }
+  CHECK(pts.size() == 490 && pts.front().first == 0 && pts.back().first == 4890);
+  if (pts.size() < 2) return;
+  const double endMin = pts.back().first + 5;  // (the last line, 3.307 V, then under 3.30 V for a minute: shut down)
+  battest::Estimator est;
+  // The first hours off the charger the cell sheds what is left of the charge faster than it will drain later, so
+  // the first figures are short: they may be, as long as they never promise more than the cell has.  From the
+  // third hour on they are held to the truth.
+  const double settleH = 3;
+  int checked = 0, within15 = 0, within25 = 0, firstReadyMin = -1;
+  double worst = 0, worstAtH = 0, sumAbs = 0, settlingWorstLong = -1, settlingWorstShort = 0;
+  size_t seg = 0;
+  for (uint32_t t = 0; t <= (uint32_t)pts.back().first * 60; t += 5) {
+    while (seg + 2 < pts.size() && (double)t >= pts[seg + 1].first * 60.0) seg++;
+    const double m = t / 60.0, m0 = pts[seg].first, m1 = pts[seg + 1].first;
+    const double f = m1 > m0 ? (m - m0) / (m1 - m0) : 0;
+    est.add(t, (float)(pts[seg].second + f * (pts[seg + 1].second - pts[seg].second)));
+    if (t % 3600 != 0) continue;  // judged once an hour
+    const battest::Estimate e = est.estimate(3.30f, 0);
+    if (e.state != battest::Estimate::READY) continue;
+    if (firstReadyMin < 0) firstReadyMin = (int)m;
+    const double trueH = (endMin - m) / 60.0;
+    if (trueH < 6) continue;  // (the last hours are judged below, in hours rather than shares)
+    const double err = (e.unbounded ? 1e3 : e.hoursLeft) / trueH - 1.0;
+    if (m / 60.0 < settleH) {
+      settlingWorstLong = fmax(settlingWorstLong, err);
+      settlingWorstShort = fmin(settlingWorstShort, err);
+      continue;
+    }
+    checked++;
+    within15 += fabs(err) <= 0.15;
+    within25 += fabs(err) <= 0.25;
+    sumAbs += fabs(err);
+    if (fabs(err) > fabs(worst)) worst = err, worstAtH = m / 60.0;
+  }
+  printf("  (first figure after %d min; in the first %.0f hours %+.0f to %+.0f %%; then %d hourly figures up to six hours before the end: "
+         "%d within 15 %%, %d within 25 %%, mean error %.0f %%, worst %+.0f %% at %.0f h)\n",
+         firstReadyMin, settleH, 100 * settlingWorstShort, 100 * settlingWorstLong, checked, within15, within25,
+         100 * sumAbs / (checked ? checked : 1), 100 * worst, worstAtH);
+  CHECK(firstReadyMin > 0 && firstReadyMin <= 60);
+  CHECK(settlingWorstLong <= 0.10);  // settling: short is allowed, long is not
+  CHECK(checked >= 70);
+  CHECK(within15 >= checked * 9 / 10);  // nine in ten within 15 % of the truth
+  CHECK(fabs(worst) <= 0.30);           // none out by more than 30 % (the old curve said 6 days to a cell with 2.6 left)
+  CHECK(sumAbs / checked <= 0.10);
+  // near the end, in hours: three hours before the shutdown it must not promise more than five
+  {
+    battest::Estimator late;
+    size_t s = 0;
+    for (uint32_t t = 0; t <= (uint32_t)((endMin - 180) * 60); t += 5) {
+      while (s + 2 < pts.size() && (double)t >= pts[s + 1].first * 60.0) s++;
+      const double m = t / 60.0, m0 = pts[s].first, m1 = pts[s + 1].first;
+      late.add(t, (float)(pts[s].second + (m - m0) / (m1 - m0) * (pts[s + 1].second - pts[s].second)));
+    }
+    const battest::Estimate e = late.estimate(3.30f, 0);
+    CHECK(e.state == battest::Estimate::READY && !e.unbounded && e.hoursLeft <= 5.0f);
   }
 }
 
@@ -3003,7 +3079,7 @@ powerlog::Reading sampleReading(const Settings &s) {
   r.radioOnPermille = 8;
   r.radioSessions = 96;
   r.batteryPresent = true;
-  r.batteryVolts = 4.092f;
+  r.batteryVolts = 4.117f;
   r.charge = CHARGE_DISCHARGING;
   r.chargeReady = true;
   r.estimate.state = battest::Estimate::READY;
@@ -3065,10 +3141,10 @@ void testPowerLogLine() {
   const Settings s = sampleLogSettings();
   const Reading r = sampleReading(s);
   const std::string line = logLine(r);
-  CHECK_STR(line.c_str(), ",1.7 3f9a12c,on,sync,max,20,off,auto,2500,,playing,2026-10-08,14:30,0d 3h 12m,20 idle,0.8,96,4.092,87.0,discharging,"
+  CHECK_STR(line.c_str(), ",1.7 3f9a12c,on,sync,max,20,off,auto,2500,,playing,2026-10-08,14:30,0d 3h 12m,20 idle,0.8,96,4.117,87.0,discharging,"
                           "3 d 0 h,1.20,300,30.0,,187,11520,2,61,\r\n");
   CHECK(line.size() >= 140 && line.size() <= 170);  // (the README's "3,000 to 7,000 lines" rests on a line of about this length)
-  for (const char *example : {"`0d 3h 12m`", "`20 idle`", "`0.8` and `96`", "`4.092` and `87.0`", "`3 d 0 h`, `1.20` and `300`", "`2026-10-08`", "`14:30`"}) {
+  for (const char *example : {"`0d 3h 12m`", "`20 idle`", "`0.8` and `96`", "`4.117` and `87.0`", "`3 d 0 h`, `1.20` and `300`", "`2026-10-08`", "`14:30`"}) {
     if (readme.find(example) == std::string::npos) printf("  the README no longer gives %s as an example\n", example);
     CHECK(readme.find(example) != std::string::npos);
   }
@@ -3210,9 +3286,9 @@ void testPowerLogLine() {
   // the battery: the voltage, the level on the curve with a decimal, and the state in the words of the System info page
   {
     Reading t = r;
-    CHECK(logField(t, C_BATTERY_V) == "4.092" && logField(t, C_BATTERY_PCT) == "87.0" && logField(t, C_BATTERY_STATE) == "discharging");
+    CHECK(logField(t, C_BATTERY_V) == "4.117" && logField(t, C_BATTERY_PCT) == "87.0" && logField(t, C_BATTERY_STATE) == "discharging");
     t.batteryVolts = 3.3004f;
-    CHECK(logField(t, C_BATTERY_V) == "3.300" && logField(t, C_BATTERY_PCT) == "0.4");
+    CHECK(logField(t, C_BATTERY_V) == "3.300" && logField(t, C_BATTERY_PCT) == "0.8");
     t.batteryVolts = 4.25f;
     CHECK(logField(t, C_BATTERY_PCT) == "100.0");
     struct StateCase {
@@ -4122,6 +4198,7 @@ int main(int argc, char **argv) {
   testDateFormats();
   testBatteryCurve();
   testBatteryEstimate();
+  testBatteryEstimateReplay();
   testLowBattery();
   testDrift();
   testSettingsTable();

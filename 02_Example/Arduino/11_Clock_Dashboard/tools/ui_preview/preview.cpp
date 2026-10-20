@@ -1397,7 +1397,7 @@ int main() {
       "Zone      Australia/Perth  AWST-8",
       "Location  -31.952, 115.861",
       "Weather   2 min ago - Open-Meteo.com",
-      "Battery   4.09 V  87%  discharging -0.1 mV/min",
+      "Battery   4.12 V  87%  discharging -0.1 mV/min",
       "Left      3 d 0 h (1.20 %/h over 300 min)",
       "Indoor    22.4 C  45%   (sensor 26.4 C)",
       "Spotify   linked, playing (link: 152 d left)",
@@ -1418,7 +1418,7 @@ int main() {
     const char *power[] = {
         // (the same clock as on the Info page: 87 % of a 2500 mAh cell, drawing 30 mA with WiFi always on)
         "Power     80 MHz, WiFi saver normal",
-        "Battery   4.092 V = 87.0 % on the curve",
+        "Battery   4.117 V = 87.0 % on the curve",
         "Left      3 d 0 h (1.20 %/h over 300 min)",
         "Current   about 30.0 mA (of 2500 mAh)",
         "Shutdown  at 3.30 V, back on at 3.70 V",

@@ -36,22 +36,23 @@ the analogue clock's outline (1.9) and both cubes with their buttons (1.8, 1.9).
    three-quarter hours later, *discharging* within ten minutes of unplugging (9 and 14 October).
 10. **Seen.** The reading on the charger: 4.282 to 4.286 V for two days (9 to 11 October), against 4.19 to 4.22 V for
     a full cell off the charger. Above about 4.25 V the clock is on the charger (with this board's calibration).
-11. **Problem.** How close the estimate comes. Just after a charge it said 8 to 16 days; the cell went from 4.20 V to
+11. **Partly.** How close the estimate comes. Just after a charge it said 8 to 16 days; the cell went from 4.20 V to
     3.71 V in about 57 hours. The voltage barely moves for the first 12 hours after a charge (4.20 to 4.15 V took 12.8
     hours, the next 50 mV took 5.8), and the battery curve counts that stretch as 5 %, so the estimate takes the slow
-    start for the rate of the whole cell. The curve also looks wrong at the bottom (see 14). It is to be corrected
-    from a log that runs to the shutdown (12).
-12. **Not yet.** A run down to the shutdown: off the charger, with the log on, until the clock shuts itself down at
-    3.30 V. It gives the real runtime and the bottom of the battery curve, and tries the low-battery blink, the
-    battery-empty screen and the shutdown (the wake by timer and by KEY, the 3-second override). Charge it within a
-    day of the shutdown: what the board draws while the clock sleeps has not been measured (`sleeptest` in the serial
-    console would). The cell has not been run below 3.69 V yet.
+    start for the rate of the whole cell. 1.10 replaces the curve with the run in 12; replayed through the estimator
+    on a PC, from the third hour off the charger on, 72 of 73 hourly figures were within 15 % of the time really
+    left, and in the first three hours the figure is short (never long). Still to be seen on the board.
+12. **Partly.** A run down to the shutdown, 17 to 20 October (firmware 1.9, the settings above): 81 hours from a full
+    charge to 3.30 V, a line every ten minutes to the last (3.307 V). It gave the battery curve of 1.10. Not reported
+    yet: the low-battery blink, the battery-empty screen, and the shutdown itself (the wake by timer and by KEY, the
+    3-second override). What the board draws while the clock sleeps has not been measured (`sleeptest`).
 13. **Partly.** The five battery runs (stock on WiFi, stock without WiFi, a middle ground, 20 MHz on WiFi, 20 MHz
-    without WiFi). Only the fourth has been logged (the settings above): 4.20 to 3.71 V in about 57 hours.
-14. **Partly.** Where the cell really is at 3.7 V. It is a good-quality 3400 mAh cell (about 12 Wh). At the draw
-    measured in 24 (about 105 mW from USB; somewhat less from the cell, which skips the charger's converter) it should
-    last roughly five days, yet 4.20 to 3.71 V took only 57 hours. So at 3.7 V this cell is probably still about half
-    full, where the gauge says 15 to 20 %. That is an estimate; the run in 12 will tell.
+    without WiFi). Only the fourth has been logged (the settings above): 81 hours, 3.4 days, from full to the
+    shutdown.
+14. **Seen.** Where the cell really is at 3.7 V: in the run in 12 it still had 39 % at 3.70 V, where the old curve
+    said 12 %. The good-quality 3400 mAh cell lasted 3.4 days, not the five that the USB reading in 24 suggested: on
+    the battery the clock drew roughly 40 mA from the cell (3400 mAh in 81 hours), where 105 mW from USB would make
+    about 28 mA. Why is not known.
 
 ## Power saving
 

@@ -12,10 +12,13 @@
 namespace calc {
 
 // ---------------------------------------------------------------------------
-// Battery: single-cell Li-ion / 18650 resting voltage -> state of charge.
-// Piecewise-linear through a typical discharge curve; far better than a
-// straight line because the curve is flat in the middle and falls off a cliff
-// near empty.
+// Battery: single-cell Li-ion / 18650 voltage, as the clock reads it while it runs -> state of charge.
+// Piecewise-linear through a measured discharge: a 3400 mAh 18650 in this clock, run from a full charge until it
+// shut itself down at 3.30 V (17 to 20 October 2026, firmware 1.9, wifi_mode = sync, cpu_idle_mhz = 20; 81 hours).
+// The load was steady, so the charge used was in proportion to the time, and each point is the share of the run
+// still to go when the cell got there (tools/tests/fixtures/rundown-2026-10.csv; test_features replays it).  The
+// generic curve this replaced put 3.70 V at 12 % where the cell still had 39 %, and 4.15 V at 95 % where it had 90.
+// A cell of another make or chemistry can sit a little higher or lower.
 // ---------------------------------------------------------------------------
 struct BatteryPoint {
   float v;
@@ -23,9 +26,9 @@ struct BatteryPoint {
 };
 inline const BatteryPoint *batteryCurve(int *count) {
   static const BatteryPoint kCurve[] = {
-      {4.20f, 100}, {4.15f, 95}, {4.11f, 90}, {4.08f, 85}, {4.02f, 80}, {3.98f, 75}, {3.95f, 70},
-      {3.91f, 65},  {3.87f, 60}, {3.85f, 55}, {3.84f, 50}, {3.82f, 45}, {3.80f, 40}, {3.79f, 35},
-      {3.77f, 30},  {3.75f, 25}, {3.73f, 20}, {3.71f, 15}, {3.69f, 10}, {3.61f, 5},  {3.27f, 0}};
+      {4.200f, 100}, {4.174f, 95}, {4.145f, 90}, {4.099f, 85}, {4.034f, 80}, {3.981f, 75}, {3.945f, 70},
+      {3.907f, 65},  {3.868f, 60}, {3.826f, 55}, {3.784f, 50}, {3.749f, 45}, {3.705f, 40}, {3.672f, 35},
+      {3.644f, 30},  {3.619f, 25}, {3.584f, 20}, {3.534f, 15}, {3.502f, 10}, {3.457f, 5},  {3.270f, 0}};
   *count = (int)(sizeof(kCurve) / sizeof(kCurve[0]));
   return kCurve;
 }
@@ -61,8 +64,8 @@ inline float batteryPercentF(float volts) {
 
 inline int batteryPercent(float volts) { return (int)lroundf(batteryPercentF(volts)); }
 
-// The same curve carried on above its top, with the slope of its last stretch (10 mV to the percent): 4.223 V is
-// 102.3.  For the runtime estimate only, which measures how fast the level falls.  A cell that has just come off
+// The same curve carried on above its top, with the slope of its last stretch (5.2 mV to the percent): 4.223 V is
+// 104.4.  For the runtime estimate only, which measures how fast the level falls.  A cell that has just come off
 // the charger reads above 4.20 V for a while, and so does any cell whose charger holds a shade over 4.20 V (they
 // may, by a percent) or whose calibration is a shade high.  Cut off at 100 the level would stand still while the
 // voltage came down, and under a light load that is hours in which the estimate sees no drain at all (seen on the

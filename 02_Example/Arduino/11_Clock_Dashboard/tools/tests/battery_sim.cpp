@@ -29,6 +29,10 @@
 // are several percent) and a window of a fixed length is wrong for either a fast or a slow drain;
 // letting the window follow the drain does well for both.  With a load that changes every couple
 // of hours every window does badly (the truth moves under it), which cannot be helped.
+//
+// That table is from the generic discharge curve of 1.0 to 1.9.  With the curve measured on the owner's cell (1.10),
+// which is far less flat in the middle, every window does better and the chosen one stays among the best: in the
+// steady drains a median of 2 to 8 % and a 90th percentile of 5 to 20 % (run ./battery_sim for the whole table).
 
 #include <math.h>
 #include <stdint.h>

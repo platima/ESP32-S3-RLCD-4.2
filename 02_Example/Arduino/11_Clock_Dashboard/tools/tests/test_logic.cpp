@@ -190,8 +190,8 @@ static void testTimeZones() {
 static void testBatteryCalibration() {
   section("battery voltage calibration");
   float f = 0;
-  // the case that started it: a full cell is 4.20 V on the tester and 4.135 V to the clock, which calls that 93 %
-  CHECK(calc::batteryPercent(4.135f) == 93);
+  // the case that started it: a full cell is 4.20 V on the tester and 4.135 V to the clock, which calls that 89 %
+  CHECK(calc::batteryPercent(4.135f) == 89);
   CHECK(calc::calibrationFactor(4.20f, 4.135f, &f));
   CHECK_NEAR(f, 1.01572, 1e-4);
   CHECK(calc::batteryPercent(4.135f * f) == 100);  // corrected, it is full (and over the 4.16 V the charge detector wants)
@@ -230,8 +230,8 @@ static void testSensorMaths() {
   section("sensor maths");
   CHECK(calc::batteryPercent(4.25f) == 100);
   CHECK(calc::batteryPercent(4.20f) == 100);
-  CHECK(calc::batteryPercent(3.84f) == 50);
-  CHECK(calc::batteryPercent(3.73f) == 20);
+  CHECK(calc::batteryPercent(3.784f) == 50);
+  CHECK(calc::batteryPercent(3.584f) == 20);
   CHECK(calc::batteryPercent(3.27f) == 0);
   CHECK(calc::batteryPercent(2.9f) == 0);
   int mid = calc::batteryPercent(4.00f);
@@ -852,37 +852,41 @@ static void testEstimateUnderLightLoad() {
     }
   };
 
-  // Near the top of the curve 10 mV are one percent, so 0.05 mV a minute is 0.3 % an hour (two weeks on a charge).
+  // Near the top of the curve 5 to 6 mV are one percent, so 0.05 mV a minute is about 0.55 % an hour (a week on a
+  // charge).  The rate the estimator should find is the fall on the curve over the hours it fits (after the first 15
+  // minutes, up to the fifth hour).
   struct Case {
     const char *name;
-    double startV, mvPerMin, pctPerHour;
+    double startV, mvPerMin;
   };
   const Case cases[] = {
-      {"started at 99 %, falling 0.05 mV/min", 4.19, 0.05, 0.30},
-      {"started at 99 %, falling 0.12 mV/min", 4.19, 0.12, 0.72},
-      {"started at 97 %, falling 0.03 mV/min", 4.17, 0.03, 0.18},
+      {"started at 99 %, falling 0.05 mV/min", 4.195, 0.05},
+      {"started at 99 %, falling 0.12 mV/min", 4.195, 0.12},
+      {"started at 97 %, falling 0.03 mV/min", 4.184, 0.03},
       // as read on the board a minute after the charger: over the top of the curve, where a level that is cut
       // off at 100 % stands still for the first hours
-      {"started at 4.215 V, over the top of the curve, falling 0.05 mV/min", 4.215, 0.05, 0.30},
+      {"started at 4.215 V, over the top of the curve, falling 0.05 mV/min", 4.215, 0.05},
   };
   for (const Case &c : cases) {
     forSeeds(c.name, [c](uint64_t seed, Verdict &v) {
+      const double pctPerHour = (calc::batteryPercentOpen((float)(c.startV - c.mvPerMin * 15 / 1000.0)) -
+                                 calc::batteryPercentOpen((float)(c.startV - c.mvPerMin * 300 / 1000.0))) / 4.75;
       Rig r(seed + 1400);
       r.s.run(300, [c](double m) { return c.startV - c.mvPerMin / 1000.0 * m; });
       v.need(!r.heldBack, "readings were kept from the estimator (something claimed a charger)");
       v.need(r.firstReadyMin > 0 && r.firstReadyMin <= 60, "no figure within the first hour");
       const battest::Estimate e = r.est.estimate(3.30f, 0);
       v.need(e.state == battest::Estimate::READY && !e.unbounded, "no figure after five hours");
-      v.need(fabs(e.pctPerHour - c.pctPerHour) <= 0.25 * c.pctPerHour, "the rate is more than a quarter off after five hours");
+      v.need(fabs(e.pctPerHour - pctPerHour) <= 0.25 * pctPerHour, "the rate is more than a quarter off after five hours");
       v.need(e.windowMin >= 240, "the figure does not rest on the whole run");
     });
   }
 
-  // In the flat middle of the curve (2 mV to the percent) the same drain is 0.01 mV a minute.  Nothing the
-  // detector looks at moves; the estimator is fed all the same, and says how little it rests on.
+  // Half way down, a fall of 0.01 mV a minute (under 0.1 % an hour): nothing the detector looks at moves; the
+  // estimator is fed all the same, and says how little it rests on.
   forSeeds("started at 50 %, falling 0.01 mV/min", [](uint64_t seed, Verdict &v) {
     Rig r(seed + 1500);
-    r.s.run(300, [](double m) { return 3.84 - 0.00001 * m; });
+    r.s.run(300, [](double m) { return 3.784 - 0.00001 * m; });
     v.need(!r.heldBack, "readings were kept from the estimator");
     v.need(r.firstReadyMin > 0 && r.firstReadyMin <= 60, "no figure within the first hour");
   });
