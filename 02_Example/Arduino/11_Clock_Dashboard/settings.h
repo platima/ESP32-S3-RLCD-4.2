@@ -34,6 +34,8 @@ enum CpuSpeed : uint8_t { CPU_80 = 0, CPU_160, CPU_240 };
 enum CpuIdle : uint8_t { CPUIDLE_OFF = 0, CPUIDLE_80, CPUIDLE_40, CPUIDLE_20 };  // the clock while the radio is off
 // The USB serial console: always, only while a computer is on the USB port, or never (console_policy.h)
 enum ConsoleMode : uint8_t { CONSOLE_ON = 0, CONSOLE_AUTO, CONSOLE_OFF };
+// How the display's controller drives the panel: its high power mode (25.5 Hz) or its low one (8 Hz; display_power.h)
+enum DisplayPower : uint8_t { DISPPOWER_NORMAL = 0, DISPPOWER_LOW };
 
 struct Settings {
   // --- WiFi ---------------------------------------------------------------------
@@ -74,6 +76,7 @@ struct Settings {
   uint8_t console = CONSOLE_ON;   // the USB serial console; auto and off shut it down (untried on the board)
   bool powerLog = false;          // a line of readings in the clock's flash every ten minutes (power_log.h; untried on the board)
   bool lightSleep = false;        // light sleep between the frames while nothing needs the chip (light_sleep.h; untried on the board)
+  uint8_t displayPower = DISPPOWER_NORMAL;  // the panel's refresh: low = the controller's low power mode (display_power.h; untried on the board)
   // --- weather ------------------------------------------------------------------
   int32_t weatherIntervalMin = 15;
 

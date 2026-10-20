@@ -116,6 +116,7 @@ inline Settings buildDefaults(BuildReport *rep = nullptr) {
   put(d, rep, "CONSOLE_MODE", "console", CONSOLE_MODE);
   putBool(d, rep, "POWER_LOG", "power_log", POWER_LOG);
   putBool(d, rep, "LIGHT_SLEEP", "light_sleep", LIGHT_SLEEP);
+  put(d, rep, "DISPLAY_POWER", "display_power", DISPLAY_POWER);
 
   // Weather
   putInt(d, rep, "WEATHER_INTERVAL_MIN", "weather_interval_min", WEATHER_INTERVAL_MIN);

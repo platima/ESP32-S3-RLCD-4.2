@@ -37,4 +37,5 @@
     "console = auto\n"
     "power_log = on\n"
     "light_sleep = on\n"
+    "display_power = low\n"
     "weather_interval_min = 30\n";

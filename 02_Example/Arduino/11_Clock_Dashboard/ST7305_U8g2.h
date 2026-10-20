@@ -4,7 +4,8 @@
 //
 // Derived from Waveshare's 10_U8G2_Test example.  Changes: the pixel polarity
 // can be inverted (so U8g2 "colour 1" can mean black ink), begin() reports
-// allocation failure, and the SPI clock / pin handling is unchanged.
+// allocation failure, the panel can be switched to the controller's low power
+// mode (display_power.h), and the SPI clock / pin handling is unchanged.
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -22,10 +23,12 @@ private:
   uint8_t *_my_buf = nullptr;
   volatile bool _invert = false;
   bool _busHeld = false;  // begin() starts one long SPI transaction, see busRelease()
+  bool _lowPower = false;  // the panel is driven in the low power mode (fullInit() leaves it in the high one)
 
   void _cmd(uint8_t cmd);
   void _data(const uint8_t *data, size_t len);
   void _cmd_data(uint8_t cmd, const uint8_t *data, size_t len);
+  void _sourceVoltages();
 
   static uint8_t u8x8_d_st7305_custom(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr);
   static uint8_t u8x8_byte_custom(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr);
@@ -44,6 +47,12 @@ public:
   // Takes effect on the next sendBuffer().
   void setInvert(bool invert) { _invert = invert; }
   bool invert() const { return _invert; }
+
+  // The controller's low power mode (8 Hz refresh) or its high power mode (25.5 Hz, what fullInit() leaves), by the
+  // datasheet's sequence: 120 ms into the low one, 320 ms out of it, spent in delay().  Nothing is sent when the
+  // panel is in that mode already.  A frame shows up later in the low one: see display_power.h.
+  void setLowPower(bool low);
+  bool lowPower() const { return _lowPower; }
 
   // begin() opens one SPI transaction and keeps it open, which holds the SPI peripheral's lock
   // for good and keeps every transfer cheap.  The lock is not recursive, so whatever else needs

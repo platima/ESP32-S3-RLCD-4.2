@@ -16,6 +16,7 @@
 #include "../../buttons.h"
 #include "../../calc.h"
 #include "../../charge.h"
+#include "../../display_power.h"
 #include "../../frame_plan.h"
 #include "../../infinity_cube.h"
 #include "../../link_page.h"
@@ -918,6 +919,20 @@ static void testEstimateUnderLightLoad() {
 // is simulated alongside for comparison.
 // ---------------------------------------------------------------------------
 namespace {
+// The panel as display_power.h has it: its controller refreshes the rows of the digits once every `frameUs` by its
+// own oscillator (off by `ppm`), the first time at `phaseUs`; a frame is on the glass at the first refresh after its
+// transfer has ended.
+struct PanelScan {
+  double frameUs;
+  double phaseUs;
+  double ppm;
+  int64_t onGlassAt(int64_t endUs) const {
+    const double period = frameUs * (1.0 + ppm * 1e-6);
+    const double k = ceil(((double)endUs - phaseUs) / period);
+    return (int64_t)ceil(phaseUs + k * period);
+  }
+};
+
 struct LoopSim {
   int64_t t;  // wall clock, microseconds
   uint64_t rng;
@@ -925,6 +940,7 @@ struct LoopSim {
   int stallMinMs = 0, stallMaxMs = 0;
   double spikeProb = 0, spikeFactor = 4;  // some draws take this many times longer
   double forceEverySec = 0;               // mean time between forced redraws (a key press, a toast); 0 = none
+  int32_t latencyUs = 20000;              // the planner's time from a transfer to the glass (DISPLAY_LATENCY_MS)
   int64_t nextStallAt = INT64_MAX, nextForceAt = INT64_MAX, nextSlowAt = 0;
   bool forcePending = false;
 
@@ -970,7 +986,7 @@ struct LoopSim {
 
   // The planner-driven loop
   void runNew(int seconds) {
-    FramePlanner p(20000);
+    FramePlanner p(latencyUs);
     arm();
     const int64_t end = t + (int64_t)seconds * 1000000;
     auto draw = [&](time_t sec, bool scheduled) {
@@ -1045,6 +1061,13 @@ struct LoopSim {
     std::vector<double> v;
     for (size_t i = skipFrames; i < shown.size(); i++)
       if (shown[i].scheduled) v.push_back(((shown[i].endUs + 20000) - shown[i].sec * 1000000LL) / 1000.0);
+    return v;
+  }
+  // The same with the panel modelled: from the start of its second to each scheduled frame being on the glass, in ms.
+  std::vector<double> onGlass(const PanelScan &panel, size_t skipFrames = 5) const {
+    std::vector<double> v;
+    for (size_t i = skipFrames; i < shown.size(); i++)
+      if (shown[i].scheduled) v.push_back((panel.onGlassAt(shown[i].endUs) - shown[i].sec * 1000000LL) / 1000.0);
     return v;
   }
   static int countAbove(const std::vector<double> &v, double ms) {
@@ -1255,6 +1278,87 @@ static void testFramePlan() {
     CHECK(framesAfterRecovery > 100);
     CHECK(wrongAfterRecovery == 0);
   }
+}
+
+// display_power (display_power.h): the panel's two refresh rates, the switch between them, and when a second is on
+// the glass at each with the planner given the matching time to the glass.
+static void testFramePlanPanel() {
+  section("frame scheduling: the panel's refresh (display_power)");
+  using P = FramePlanner;
+  // the register and the figures: 25.5 Hz in the high power mode as before (HFRA 0), 8 Hz in the low one (LFRA 5)
+  CHECK((dispower::kFrameRate & 0x10) == 0 && (dispower::kFrameRate & 0x07) == 5 && (dispower::kFrameRate & 0xE8) == 0);
+  CHECK(dispower::latencyUs(false, 20000) == 20000);
+  CHECK(dispower::latencyUs(true, 20000) == 20000 + dispower::kExtraLatencyUs);
+  CHECK(dispower::kExtraLatencyUs > 42000 && dispower::kExtraLatencyUs < 43500);  // (125 - 39.2) / 2 ms
+  {  // the datasheet's sequences (7.11): into LPM the voltages, 20 ms, 39h, 100 ms; out of it 38h, 300 ms, the voltages, 20 ms
+    dispower::Step st[dispower::kMaxSteps];
+    CHECK(dispower::switchSteps(true, st) == 2);
+    CHECK(st[0].cmd == dispower::VOLTAGES && st[0].waitMs == 20 && st[1].cmd == 0x39 && st[1].waitMs == 100);
+    CHECK(dispower::switchSteps(false, st) == 2);
+    CHECK(st[0].cmd == 0x38 && st[0].waitMs == 300 && st[1].cmd == dispower::VOLTAGES && st[1].waitMs == 20);
+  }
+  {  // a frame that is prepared goes out by the new figure once it changes
+    P p(20000);
+    p.drew(500, 30000, false);
+    p.sent(15000);
+    p.drew(501, 30000, true);
+    P::Step s = p.next(500, 940000, false);  // 60 ms left, sent 35 ms ahead: 25 ms to wait
+    CHECK(s.action == P::SLEEP && s.waitUs == 25000);
+    p.setLatencyUs(dispower::latencyUs(true, 20000));
+    CHECK(p.latencyUs() == 20000 + dispower::kExtraLatencyUs);
+    s = p.next(500, 940000, false);  // now 78 ms ahead: due already
+    CHECK(s.action == P::SEND && s.waitUs == 0);
+    s = p.next(500, 900000, false);  // (from 100 ms before the tick: 22 ms to wait)
+    CHECK(s.action == P::SLEEP && s.waitUs > 21000 && s.waitUs < 23000);
+  }
+  {  // ... and the next second is drawn earlier: 168 ms ahead instead of 125
+    P p(dispower::latencyUs(true, 20000));
+    p.drew(500, 30000, false);
+    p.sent(15000);
+    CHECK(p.next(500, 820000, false).action == P::IDLE);
+    P::Step s = p.next(500, 840000, false);
+    CHECK(s.action == P::PREPARE && s.sec == 501);
+  }
+
+  // Simulated loops (LoopSim, no stalls or slow draws: those are the tests above), the panel's oscillator off by up
+  // to 2 %, so its refreshes move through the second.  The error of each second: when it is on the glass less when it
+  // began.
+  struct Glass {
+    double mean = 0, lo = 1e9, hi = -1e9;
+    int n = 0;
+    bool everySecond = true;
+  };
+  auto glass = [](double frameUs, int32_t latencyUs) {
+    Glass g;
+    double sum = 0;
+    const double ppms[] = {-20000, -7000, -2000, 2500, 6000, 15000};
+    for (int i = 0; i < 6; i++) {
+      LoopSim s(40 + (uint64_t)i);
+      s.latencyUs = latencyUs;
+      s.runNew(240);
+      g.everySecond = g.everySecond && s.everySecondShown();
+      const PanelScan panel = {frameUs, s.uniform() * frameUs, ppms[i]};
+      for (double e : s.onGlass(panel)) {
+        sum += e;
+        g.n++;
+        g.lo = fmin(g.lo, e);
+        g.hi = fmax(g.hi, e);
+      }
+    }
+    g.mean = g.n ? sum / g.n : 0;
+    return g;
+  };
+  const Glass hpm = glass(dispower::kHpmFrameUs, dispower::latencyUs(false, 20000));
+  const Glass lpm = glass(dispower::kLpmFrameUs, dispower::latencyUs(true, 20000));
+  const Glass wrong = glass(dispower::kLpmFrameUs, dispower::latencyUs(false, 20000));  // the 25.5 Hz figure on the 8 Hz panel
+  printf("  on the glass: 25.5 Hz %+.1f ms on average (%+.0f to %+.0f), 8 Hz %+.1f ms (%+.0f to %+.0f), 8 Hz timed as 25.5 %+.1f ms"
+         " (%+.0f to %+.0f), %d frames each\n",
+         hpm.mean, hpm.lo, hpm.hi, lpm.mean, lpm.lo, lpm.hi, wrong.mean, wrong.lo, wrong.hi, lpm.n);
+  CHECK(hpm.n > 1300 && lpm.n > 1300 && hpm.everySecond && lpm.everySecond);
+  CHECK(fabs(hpm.mean) < 3.0 && hpm.lo > -33.0 && hpm.hi < 33.0);    // half of 39 ms either way, and the loop's own 12
+  CHECK(fabs(lpm.mean) < 4.0 && lpm.lo > -76.0 && lpm.hi < 76.0);    // half of 125 ms either way, and the same 12
+  CHECK(lpm.hi - lpm.lo > 110.0);                                     // (the refreshes did go round the whole second)
+  CHECK(wrong.mean > 35.0 && wrong.hi > 90.0);                        // the check above would see the wrong figure
 }
 
 // ---------------------------------------------------------------------------
@@ -2485,6 +2589,7 @@ int main() {
   testCharge();
   testEstimateUnderLightLoad();
   testFramePlan();
+  testFramePlanPanel();
   testWeather();
   testSpotify();
   testUtil();

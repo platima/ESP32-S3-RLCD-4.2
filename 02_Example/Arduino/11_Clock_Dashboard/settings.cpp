@@ -66,6 +66,9 @@ const EnumName kConsoleNames[] = {{"on", CONSOLE_ON},     {"yes", CONSOLE_ON},  
                                   {"auto", CONSOLE_AUTO}, {"usb", CONSOLE_AUTO}, {"automatic", CONSOLE_AUTO},
                                   {"off", CONSOLE_OFF},   {"no", CONSOLE_OFF},  {"never", CONSOLE_OFF}, {"false", CONSOLE_OFF}, {"0", CONSOLE_OFF},
                                   {nullptr, 0}};
+const EnumName kDisplayPowerNames[] = {{"normal", DISPPOWER_NORMAL}, {"high", DISPPOWER_NORMAL}, {"hpm", DISPPOWER_NORMAL},
+                                       {"default", DISPPOWER_NORMAL}, {"low", DISPPOWER_LOW},     {"lpm", DISPPOWER_LOW},
+                                       {"saver", DISPPOWER_LOW},      {nullptr, 0}};
 const EnumName kCpuNames[] = {{"80", CPU_80},   {"80mhz", CPU_80},   {"160", CPU_160}, {"160mhz", CPU_160},
                               {"240", CPU_240}, {"240mhz", CPU_240}, {nullptr, 0}};
 
@@ -198,6 +201,12 @@ const Def kDefs[] = {
      "KEY and BOOT wake it at once.  While it sleeps its clock runs on an RC oscillator in the chip,\n"
      "less exact than the crystal: the hourly network time puts it right, and without WiFi nothing\n"
      "does.  Not yet tried on the board; see the README."},
+    {"display_power", "dpower", T_ENUM, OFF(displayPower), 0, 0, 0, kDisplayPowerNames, false, "Power",
+     "normal or low: how the display's controller drives the panel.  Low is its low power mode,\n"
+     "which refreshes the panel 8 times a second instead of 25.5: less current (how much has not\n"
+     "been measured), and a frame shows up 0 to 125 ms after it is sent instead of 0 to 39.  The\n"
+     "clock allows for that, so the seconds change up to about 63 ms early or late instead of 20.\n"
+     "Not yet tried on the board; see the README."},
     {"weather_interval_min", "wxint", T_INT, OFF(weatherIntervalMin), 0, 5, 240, nullptr, false, "Weather",
      "Minutes between weather updates, 5 to 240 (default 15)."},
 };

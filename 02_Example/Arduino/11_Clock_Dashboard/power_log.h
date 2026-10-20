@@ -58,13 +58,14 @@ const char *const kOldFile = "powerlog.old";  // the ones before them
 enum Column : uint8_t {
   C_TEST = 0,  // (not known to the clock: the name of the run)
   C_FIRMWARE,
-  C_WIFI,  // the seven settings a run is made with, by the names and in the words of the settings file
+  C_WIFI,  // the eight settings a run is made with, by the names and in the words of the settings file
   C_WIFI_MODE,
   C_WIFI_POWER_SAVE,
   C_CPU_IDLE_MHZ,
   C_SPOTIFY_LIVE,
   C_CONSOLE,
   C_LIGHT_SLEEP,
+  C_DISPLAY_POWER,
   C_BATTERY_CAPACITY_MAH,
   C_CARD,  // (not known: the card is only looked at while the clock starts)
   C_MUSIC,
@@ -94,7 +95,7 @@ enum Column : uint8_t {
 inline const char *columnName(int c) {
   static const char *const names[] = {
       "test",           "firmware",     "wifi",        "wifi_mode",  "wifi_power_save", "cpu_idle_mhz",
-      "spotify_live",   "console",      "light_sleep", "battery_capacity_mah",           "card",
+      "spotify_live",   "console",      "light_sleep", "display_power", "battery_capacity_mah",     "card",
       "music",          "date",         "time",        "uptime",     "clock_shown",     "radio_on_pct",
       "radio_sessions", "asleep_pct",   "battery_v",   "battery_pct", "battery_state",  "left",
       "pct_per_hour",   "over_min",     "clock_ma",    "meter_ma",   "free_kb",         "frames_sent",
@@ -205,7 +206,8 @@ inline size_t formatLine(const Reading &r, char *out, size_t cap) {
   // which firmware, which settings
   snprintf(f[C_FIRMWARE], kField, "%s%s%s", r.version, r.buildId[0] ? " " : "", r.buildId);
   if (r.settings) {
-    for (int c : {C_WIFI, C_WIFI_MODE, C_WIFI_POWER_SAVE, C_CPU_IDLE_MHZ, C_SPOTIFY_LIVE, C_CONSOLE, C_LIGHT_SLEEP}) {
+    for (int c : {C_WIFI, C_WIFI_MODE, C_WIFI_POWER_SAVE, C_CPU_IDLE_MHZ, C_SPOTIFY_LIVE, C_CONSOLE, C_LIGHT_SLEEP,
+                  C_DISPLAY_POWER}) {
       settingText(*r.settings, columnName(c), f[c], kField);  // (the column is named after its setting)
     }
     // (0 means "not known", and what is not known is left empty)

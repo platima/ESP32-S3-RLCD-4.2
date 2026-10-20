@@ -86,7 +86,7 @@ std::string dump(const Settings &s) {
 void testSettingsTable() {
   section("settings table");
   const size_t n = settingCount();
-  CHECK(n == 33);
+  CHECK(n == 34);
   CHECK(n <= 64);  // userSet is a 64 bit mask
   CHECK_STR(settingKey(n), "");
   CHECK_STR(settingNvsKey(n), "");
@@ -157,6 +157,27 @@ void testSettingsRoundTrip() {
   }
   CHECK(!Settings().lightSleep && all.s.lightSleep);
   CHECK_STR(settingNvsKey(idx("light_sleep")), "lsleep");
+  {  // ... and what a 1.10 clock saved: display_power (new in 1.11) at its default, the rest as saved
+    Settings old;
+    for (size_t i = 0; i < settingCount(); i++) {
+      if (!strcmp(settingKey(i), "display_power")) continue;
+      CHECK(applyStoredSetting(old, i, fmt(all.s, i).c_str()));
+    }
+    CHECK(old.displayPower == DISPPOWER_NORMAL && !settingIsUserSet(old, idx("display_power")));
+    CHECK(old.lightSleep && settingIsUserSet(old, idx("light_sleep")));
+    CHECK(old.userSet == (uint64_t)(((1ull << settingCount()) - 1) & ~(1ull << idx("display_power"))));
+  }
+  CHECK(Settings().displayPower == DISPPOWER_NORMAL && all.s.displayPower == DISPPOWER_LOW);
+  CHECK_STR(settingNvsKey(idx("display_power")), "dpower");
+  {  // its words: normal (also high, hpm, default) and low (also lpm, saver); on and off say nothing here, so they are refused
+    for (const char *w : {"normal", "Normal", "high", "HPM", "default"}) CHECK(apply(std::string("display_power = low\ndisplay_power = ") + w).s.displayPower == DISPPOWER_NORMAL);
+    for (const char *w : {"low", "LOW", "lpm", "saver"}) CHECK(apply(std::string("display_power = ") + w).s.displayPower == DISPPOWER_LOW);
+    for (const char *w : {"on", "off", "8", "lowest"}) {
+      const Applied a = apply(std::string("display_power = ") + w);
+      CHECK(a.r.problems() == 1 && a.s.displayPower == DISPPOWER_NORMAL);
+    }
+    CHECK(fmt(all.s, idx("display_power")) == "low" && fmt(Settings(), idx("display_power")) == "normal");
+  }
 
   // stored text that no longer validates is ignored, and leaves the setting alone
   Settings u;
@@ -2979,7 +3000,7 @@ void testPowerLog() {
     return false;
   };
   for (const char *setting : {"wifi", "wifi_mode", "wifi_power_save", "cpu_idle_mhz", "spotify_live", "console", "light_sleep",
-                              "battery_capacity_mah"}) {
+                              "display_power", "battery_capacity_mah"}) {
     if (!has(setting) || idx(setting) == (size_t)-1) printf("  power-log.csv: no column for the setting %s\n", setting);
     CHECK(has(setting) && idx(setting) != (size_t)-1);
   }
@@ -3010,7 +3031,7 @@ void testPowerLog() {
 // The settings and the readings of the README's own examples ("Logging a battery run").
 Settings sampleLogSettings() {
   return apply("wifi_mode = sync\nwifi_power_save = max\ncpu_idle_mhz = 20\nspotify_live = off\nconsole = auto\nlight_sleep = on\n"
-               "battery_capacity_mah = 2500\n").s;
+               "display_power = low\nbattery_capacity_mah = 2500\n").s;
 }
 
 powerlog::Reading sampleReading(const Settings &s) {
@@ -3096,7 +3117,7 @@ void testPowerLogLine() {
   const Settings s = sampleLogSettings();
   const Reading r = sampleReading(s);
   const std::string line = logLine(r);
-  CHECK_STR(line.c_str(), ",1.7 3f9a12c,on,sync,max,20,off,auto,on,2500,,playing,2026-10-08,14:30,0d 3h 12m,20 idle,0.8,96,78.5,4.092,87.0,"
+  CHECK_STR(line.c_str(), ",1.7 3f9a12c,on,sync,max,20,off,auto,on,low,2500,,playing,2026-10-08,14:30,0d 3h 12m,20 idle,0.8,96,78.5,4.092,87.0,"
                           "discharging,3 d 0 h,1.20,300,30.0,,187,11520,2,61,\r\n");
   CHECK(line.size() >= 140 && line.size() <= 170);  // (the README's "3,000 to 7,000 lines" rests on a line of about this length)
   for (const char *example : {"`0d 3h 12m`", "`20 idle`", "`0.8` and `96`", "`78.5`", "`4.092` and `87.0`", "`3 d 0 h`, `1.20` and `300`", "`2026-10-08`",
@@ -3128,7 +3149,8 @@ void testPowerLogLine() {
         for (int idle : {CPUIDLE_OFF, CPUIDLE_80, CPUIDLE_40, CPUIDLE_20})
           for (int live = 0; live < 2; live++)
             for (int console : {CONSOLE_ON, CONSOLE_AUTO, CONSOLE_OFF})
-              for (int sleep = 0; sleep < 2; sleep++) {
+              for (int sleep = 0; sleep < 2; sleep++)
+                for (int disp : {DISPPOWER_NORMAL, DISPPOWER_LOW}) {
               Settings t;
               t.wifi = wifi != 0;
               t.wifiMode = (uint8_t)mode;
@@ -3137,11 +3159,13 @@ void testPowerLogLine() {
               t.spotifyLive = live != 0;
               t.console = (uint8_t)console;
               t.lightSleep = sleep != 0;
+              t.displayPower = (uint8_t)disp;
               const std::string l = logLine(sampleReading(t));
               const std::vector<std::string> f = logFields(l);
               CHECK(f.size() == (size_t)kColumnCount);
               if (f.size() != (size_t)kColumnCount) continue;
-              for (const char *name : {"wifi", "wifi_mode", "wifi_power_save", "cpu_idle_mhz", "spotify_live", "console", "light_sleep"}) {
+              for (const char *name : {"wifi", "wifi_mode", "wifi_power_save", "cpu_idle_mhz", "spotify_live", "console", "light_sleep",
+                                       "display_power"}) {
                 const std::string &text = f[(size_t)col(name)];
                 CHECK(!text.empty() && text == fmt(t, idx(name)));
                 const Applied back = apply(std::string(name) + " = " + text + "\n", Settings());
@@ -3153,10 +3177,10 @@ void testPowerLogLine() {
               all += l;
               combos++;
             }
-  CHECK(combos == 384);
+  CHECK(combos == 768);
   CHECK(powerLogProblems(all, readme, true) == 0);
   CHECK(col("wifi") == C_WIFI && col("console") == C_CONSOLE && col("cpu_idle_mhz") == C_CPU_IDLE_MHZ && col("notes") == C_NOTES);
-  CHECK(col("light_sleep") == C_LIGHT_SLEEP && col("asleep_pct") == C_ASLEEP_PCT);
+  CHECK(col("light_sleep") == C_LIGHT_SLEEP && col("asleep_pct") == C_ASLEEP_PCT && col("display_power") == C_DISPLAY_POWER);
   {  // settingText: by the setting's name, and nothing for a name that is no setting
     char t[16] = "x";
     settingText(s, "wifi_mode", t, sizeof t);

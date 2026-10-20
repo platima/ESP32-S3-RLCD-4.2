@@ -14,6 +14,7 @@
 #include "check.h"
 #include "clock_policy.h"
 #include "console_policy.h"
+#include "display_power.h"
 #include "frame_plan.h"
 #include "light_sleep.h"
 #include "radio_plan.h"
@@ -1234,10 +1235,11 @@ void splitUs(int64_t us, time_t *sec, int32_t *usec) {
 // FramePlanner::idleUs(): for as long as it says, next() asks for nothing but naps, and once that time is up it asks
 // for a step.  The planner is driven the way the sketch drives it, at `mhz` (a frame costs 80 / mhz times as much),
 // and probed at every turn of the loop.  Returns the number of probes where `idle` (the planner's own, or a wrong one
-// that shows this can fail) is not borne out.
+// that shows this can fail) is not borne out.  `latencyUs`: the planner's time to the glass (display_power.h); with
+// `switchHalfway` it changes to the other mode's figure half-way through, as a switch of display_power would.
 template <class Idle>
-int idleMisses(Idle idle, int mhz, uint64_t seed, int *probesOut = nullptr) {
-  FramePlanner p(20000);
+int idleMisses(Idle idle, int mhz, uint64_t seed, int *probesOut = nullptr, int32_t latencyUs = 20000, bool switchHalfway = false) {
+  FramePlanner p(latencyUs);
   if (mhz != 80) p.clockChanged(80, (uint32_t)mhz);
   Rng r(seed);
   const double f = 80.0 / mhz;
@@ -1254,6 +1256,7 @@ int idleMisses(Idle idle, int mhz, uint64_t seed, int *probesOut = nullptr) {
     if (step != wantStep) misses++;
   };
   for (int turn = 0; turn < 6000; turn++) {
+    if (switchHalfway && turn == 3000) p.setLatencyUs(p.latencyUs() == 20000 ? dispower::latencyUs(true, 20000) : 20000);
     time_t sec;
     int32_t usec;
     splitUs(t, &sec, &usec);
@@ -1301,6 +1304,12 @@ void testFramePlanIdle() {
     int probes = 0;
     const int misses = idleMisses(real, mhz, 11 + (uint64_t)mhz, &probes);
     if (misses) printf("  %d MHz: %d of %d probes miss\n", mhz, misses, probes);
+    CHECK(misses == 0 && probes > 20000);
+  }
+  for (bool halfway : {false, true}) {  // display_power = low: 43 ms more to the glass, from the start or from half-way
+    int probes = 0;
+    const int misses = idleMisses(real, 20, 5, &probes, dispower::latencyUs(true, 20000), halfway);
+    if (misses) printf("  display_power = low%s: %d of %d probes miss\n", halfway ? ", switched half-way" : "", misses, probes);
     CHECK(misses == 0 && probes > 20000);
   }
   // the probes can fail: three ways of getting it wrong, each caught
@@ -1641,6 +1650,7 @@ void testWallFix() {
 struct SleepLoop {
   bool lightSleep = true;
   int idleMhz = 20;
+  int32_t latencyUs = 20000;   // the planner's time to the glass (display_power.h)
   double stallEverySec = 0;    // stalls of 20 to 300 ms, about this often in the time awake (0: none)
   double pressEverySec = 600;  // a button press about this often
   // what came of it
@@ -1655,7 +1665,7 @@ struct SleepLoop {
 
   void run(int seconds, uint64_t seed) {
     Rng r(seed);
-    FramePlanner p(20000);
+    FramePlanner p(latencyUs);
     int mhz = 80;
     int64_t t = 1700000000LL * 1000000LL + 250000;
     const int64_t start = t, end = t + (int64_t)seconds * 1000000;
@@ -1864,6 +1874,20 @@ void testLightSleepLoop() {
            off.worstPressUs / 1000.0, 100.0 * on.asleepUs / on.totalUs);
     CHECK(on.late <= off.late + 2);
     CHECK(on.worstPressUs <= off.worstPressUs + 5000);
+  }
+  {  // display_power = low: every frame goes out 43 ms earlier in its second (the panel takes that much longer); no more
+     // late frames for it, and the chip sleeps about as much
+    SleepLoop hpm, lpm;
+    lpm.latencyUs = dispower::latencyUs(true, 20000);
+    hpm.run(kSeconds, 21);
+    lpm.run(kSeconds, 21);
+    printf("  display_power = low, idle clock 20 MHz: asleep %.1f %% (%.1f %% with normal), frames late %d of %d (%d of %d), worst %.1f ms"
+           " (%.1f ms)\n",
+           100.0 * lpm.asleepUs / lpm.totalUs, 100.0 * hpm.asleepUs / hpm.totalUs, lpm.late, lpm.frames, hpm.late, hpm.frames,
+           lpm.worstLateUs / 1000.0, hpm.worstLateUs / 1000.0);
+    CHECK(lpm.frames > kSeconds * 9 / 10);
+    CHECK(lpm.late <= hpm.late && lpm.worstLateUs <= hpm.worstLateUs + 5000);
+    CHECK(lpm.asleepUs > 0.70 * lpm.totalUs && lpm.asleepUs > hpm.asleepUs - 0.02 * hpm.totalUs);
   }
 }
 

@@ -1423,14 +1423,15 @@ int main() {
         "Left      3 d 0 h (1.20 %/h over 300 min)",
         "Current   about 30.0 mA (of 2500 mAh)",
         "Shutdown  at 3.30 V, back on at 3.70 V",
+        "Display   low power mode chosen, not in it",  // (display_power = low: the wider of its two)
         "Drift     +1.8 ppm = +0.16 s/day over 18 h",
         "Config    SD: 7 changed, 1 unchanged, 2 problems",
         "          line 5: 'wifi': expected on or off",
         "          line 9: unknown setting 'colour'",
         "Units     metric, 24 h, ISO date, week numbers",
     };
-    m.infoCount = 11;
-    for (int i = 0; i < 11; i++) setStr(m.info[i], UI_INFO_LINE_LEN, power[i]);
+    m.infoCount = 12;
+    for (int i = 0; i < 12; i++) setStr(m.info[i], UI_INFO_LINE_LEN, power[i]);
   }
   snapshot("power", m);
   u8g2_ClearBuffer(g_u);

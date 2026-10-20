@@ -6,9 +6,10 @@
 // WiFi stack taking the memory bus, a flash write on the other core), while sending
 // it is short.  So the coming second is drawn into the display buffer early, with
 // room to spare, and sent just before it starts: the draw may run long without the
-// digits changing late.  The panel refreshes itself at about 25 Hz, so a frame shows
-// up 0-39 ms after it has been sent; the send is timed to end `latencyUs` before the
-// second starts, which puts the average error at zero.
+// digits changing late.  The panel refreshes itself at 25.5 Hz, so a frame shows
+// up 0-39 ms after it has been sent (0-125 ms at the 8 Hz of display_power = low,
+// display_power.h); the send is timed to end `latencyUs` before the second starts,
+// which puts the average error at zero.
 //
 // Pure logic with no Arduino dependency: the UI loop asks next() whenever it wakes up
 // and does what it says; tools/tests drives it with simulated clocks and stalls.
@@ -130,6 +131,9 @@ class FramePlanner {
   uint32_t drawCostUs() const { return drawCostUs_; }
   uint32_t sendCostUs() const { return sendCostUs_; }
   int32_t latencyUs() const { return latencyUs_; }
+  // The panel was switched to another refresh rate (display_power.h).  A frame that is prepared already goes out
+  // by the new figure.
+  void setLatencyUs(int32_t us) { latencyUs_ = us; }
 
  private:
   // One freak measurement (a stall in the middle of a draw) must not move the schedule for long.  (The

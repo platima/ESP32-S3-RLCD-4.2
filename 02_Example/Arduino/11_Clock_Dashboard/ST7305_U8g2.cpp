@@ -1,4 +1,5 @@
 #include "ST7305_U8g2.h"
+#include "display_power.h"
 
 #define SPI_CLK 24000000
 #define ST7305_TILE_WIDTH 38
@@ -238,24 +239,55 @@ bool ST7305_U8g2::begin(uint8_t tile_buf_height, const u8g2_cb_t *rotation)
   return true;
 }
 
+// The source voltages, the same in each of the four sets (VSHP, VSLP, VSHN, VSLN), and the set in use: sent by
+// fullInit(), and again on every switch between the power modes (the datasheet's sequence has them there).
+static const uint8_t c1[] = {0x69, 0x69, 0x69, 0x69};
+static const uint8_t c2[] = {0x19, 0x19, 0x19, 0x19};
+static const uint8_t c4[] = {0x4B, 0x4B, 0x4B, 0x4B};
+static const uint8_t c9[] = {0x00};
+
+void ST7305_U8g2::_sourceVoltages()
+{
+  _cmd_data(0xC1, c1, sizeof(c1));
+  _cmd_data(0xC2, c2, sizeof(c2));
+  _cmd_data(0xC4, c4, sizeof(c4));
+  _cmd_data(0xC5, c2, sizeof(c2));
+  _cmd_data(0xC9, c9, sizeof(c9));
+}
+
+void ST7305_U8g2::setLowPower(bool low)
+{
+  if (low == _lowPower) {
+    return;
+  }
+  dispower::Step steps[dispower::kMaxSteps];
+  const size_t n = dispower::switchSteps(low, steps);
+  for (size_t i = 0; i < n; i++) {
+    if (steps[i].cmd == dispower::VOLTAGES) {
+      _sourceVoltages();
+    } else {
+      _cmd(steps[i].cmd);
+    }
+    delay(steps[i].waitMs);
+  }
+  _lowPower = low;
+}
+
 void ST7305_U8g2::fullInit()
 {
   reset();
+  _lowPower = false;  // (a reset leaves it in the high power mode, and so does the 0x38 below)
 
   const uint8_t d6[] = {0x17, 0x02};
   const uint8_t d1[] = {0x01};
   const uint8_t c0[] = {0x11, 0x04};
-  const uint8_t c1[] = {0x69, 0x69, 0x69, 0x69};
-  const uint8_t c2[] = {0x19, 0x19, 0x19, 0x19};
-  const uint8_t c4[] = {0x4B, 0x4B, 0x4B, 0x4B};
   const uint8_t d8[] = {0x80, 0xE9};
-  const uint8_t b2[] = {0x02};
+  const uint8_t b2[] = {dispower::kFrameRate};  // 25.5 Hz in the high power mode as Waveshare's 0x02; 8 Hz, not 1, in the low one
   const uint8_t b3[] = {0xE5, 0xF6, 0x05, 0x46, 0x77, 0x77, 0x77, 0x77, 0x76, 0x45};
   const uint8_t b4[] = {0x05, 0x46, 0x77, 0x77, 0x77, 0x77, 0x76, 0x45};
   const uint8_t g_timing[] = {0x32, 0x03, 0x1F};
   const uint8_t b7[] = {0x13};
   const uint8_t b0[] = {0x64};
-  const uint8_t c9[] = {0x00};
   const uint8_t m36[] = {0x48};
   const uint8_t m3a[] = {0x11};
   const uint8_t b9[] = {0x20};

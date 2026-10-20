@@ -1,7 +1,7 @@
 # 11_Clock_Dashboard
 
 A desk clock for the Waveshare ESP32-S3-RLCD-4.2: it joins your WiFi, sets the time over NTP, works out the
-time zone (including daylight saving) by itself, and shows everything on the reflective LCD. Version **1.10**
+time zone (including daylight saving) by itself, and shows everything on the reflective LCD. Version **1.11**
 ([what changed](#versions)).
 
 <img src="docs/dashboard.png" alt="Dashboard" width="560">
@@ -25,7 +25,7 @@ time zone (including daylight saving) by itself, and shows everything on the ref
 > board's owner). Of what came with 1.3 and after, the owner has since seen three things work there: **a settings
 > file read from an SD card, a firmware installed from the card, and the processor slowed to 20 MHz** between syncs.
 > The rest, **the shutdown, how good the runtime estimate is, the clock drift measurement, the moon, the backup
-> network, most of [Saving power](#saving-power), the power log, the light sleep**, as well as the Spotify linking flow, the charging indicator and the
+> network, most of [Saving power](#saving-power), the power log, the light sleep, the display's low power mode**, as well as the Spotify linking flow, the charging indicator and the
 > frame scheduler from earlier, has so far only been checked on a PC (renderer, fuzz test, simulations, tens of
 > thousands of host-side checks) and compiled for the board. [Not yet tried on the board](#not-yet-tried-on-the-board)
 > goes through it item by item, and [Troubleshooting](#troubleshooting) says what to look at if a first guess is off.
@@ -137,6 +137,7 @@ The last column is the name the same setting has in `config.h` / `secrets.h`, se
 | `console` | `on`, `auto` or `off`: the USB serial console (the log and the commands). `auto` runs it only while a computer is on the USB port, `off` not at all; shut down, it takes the USB port with it. See [The console](#the-console). **Not yet tried on the board** (`on`) | `CONSOLE_MODE` |
 | `power_log` | `on` / `off`. On: the clock writes its power readings into its own flash, one line at each start and every ten minutes, and copies the log to an SD card that is in the slot while it starts; see [The clock's own log](#the-clocks-own-log). The first time, the FAT partition of the flash is formatted. **Not yet tried on the board** (`off`) | `POWER_LOG` (`1` / `0`) |
 | `light_sleep` | `on` / `off`. On: between the frames the processor goes into light sleep instead of idling, whenever the radio is off, the console is shut down and no button has been pressed for 8 seconds; KEY and BOOT wake it. Its clock is less exact while it sleeps: keep `wifi_mode = sync` so the network time puts it right. See [Light sleep](#light-sleep). **Not yet tried on the board** (`off`) | `LIGHT_SLEEP` (`1` / `0`) |
+| `display_power` | `normal` / `low`. Low: the display's controller refreshes the panel 8 times a second instead of 25.5 (its low power mode), for less current. A frame then shows up 0 to 125 ms after it is sent instead of 0 to 39; the frame timing allows for that, so the seconds change up to about 63 ms early or late instead of 20. How much it saves has not been measured. See [The display's low power mode](#the-displays-low-power-mode). **Not yet tried on the board** (`normal`) | `DISPLAY_POWER` |
 | `weather_interval_min` | Minutes between weather updates, 5 to 240 (`15`) | `WEATHER_INTERVAL_MIN` |
 
 (`reset_all`, described above, is not a setting but an instruction.) The accepted spellings of every value are in
@@ -384,7 +385,8 @@ All six formats fit the date line in every month (checked on the rendered pixels
 
 ### Keeping the seconds on time
 
-The panel refreshes itself at about 25 Hz, so a frame shows up 0 to 39 ms after it has been sent. The clock therefore
+The panel refreshes itself 25.5 times a second, so a frame shows up 0 to 39 ms after it has been sent (8 times and 0 to
+125 ms with `display_power = low`, see [The display's low power mode](#the-displays-low-power-mode)). The clock therefore
 draws the coming second into the display buffer ahead of time (with at least 60 ms to spare, more if drawing has been
 slow lately) and sends it just before the second starts, timed so the average error is zero (`DISPLAY_LATENCY_MS`).
 A slow draw cannot make the digits late any more, only the short transfer is exposed. `frame_plan.h` holds the
@@ -609,19 +611,22 @@ radio's share (and with it the weather, Spotify and network time); it should low
 has not been measured.
 
 Light sleep between the seconds, long left out because the chip keeps time on a less exact clock while it sleeps, is
-there since 1.10 as `light_sleep` (off by default): see [Light sleep](#light-sleep). Not done, so nobody wonders: waking
+there since 1.10 as `light_sleep` (off by default): see [Light sleep](#light-sleep). The display's controller has a low
+power mode too, there since 1.11 as `display_power`: see [The display's low power mode](#the-displays-low-power-mode).
+Not done, so nobody wonders: waking
 it every second from the clock chip's own crystal (the PCF85063's interrupt pin is wired to GPIO15, and its countdown
 timer could do it), because that timer's registers have not been checked against the chip and the library in the repo
 does not drive it.
 
 ## Saving power
 
-Five settings go further than `wifi_power_save`: **`wifi_mode = sync`** keeps the radio off between syncs,
+Six settings go further than `wifi_power_save`: **`wifi_mode = sync`** keeps the radio off between syncs,
 **`spotify_live = off`** lets it sleep while music plays as well, **`cpu_idle_mhz`** slows the processor while the radio is
-off, **`console = auto`** (or `off`) shuts the USB serial console down, and **`light_sleep`** puts the processor to sleep
-between the frames. All five are **off by default**. The first four have run on the board for days since 7 October
-2026, and the owner has measured the current with them (see [Light sleep](#light-sleep)); `light_sleep` is new in 1.10
-and has not run on a board yet. Otherwise what follows is what the code does and what a PC simulation of its rules
+off, **`console = auto`** (or `off`) shuts the USB serial console down, **`light_sleep`** puts the processor to sleep
+between the frames, and **`display_power = low`** has the display refreshed 8 times a second instead of 25.5. All six
+are **off by default**. The first four have run on the board for days since 7 October 2026, and the owner has measured
+the current with them (see [Light sleep](#light-sleep)); `light_sleep` (1.10) and `display_power` (1.11) have not run
+on a board yet. Otherwise what follows is what the code does and what a PC simulation of its rules
 says, not a measurement. If you have a USB power meter, the figures this section lacks are exactly the ones worth sending back, and
 without one the clock's own runtime estimate will do: see [Logging a battery run](#logging-a-battery-run).
 [What is switched off](#what-is-switched-off) lists every part of the board and what the clock does about it.
@@ -837,6 +842,60 @@ it on and off, the *Frames* line (no more late frames than before), every button
 what wakes it; a press that comes while it sleeps ends the sleep), the time staying right overnight (the *Drift* line,
 and the clock against a phone in the morning), and the shutdown still waking by KEY.
 
+### The display's low power mode
+
+`display_power = low` (`#define DISPLAY_POWER "low"`) switches the display's controller, a Sitronix ST7305, from its
+high power mode to its **low power mode**: it refreshes the panel 8 times a second instead of 25.5. **It is new in 1.11,
+off by default and has not run on a board yet, and what it saves has not been measured.**
+
+**What the datasheet says** (ST7305 version 0.2, April 2021,
+[a copy at Waveshare](https://files.waveshare.com/wiki/common/ST_7305_V0_2.pdf)):
+
+* The controller keeps the picture in its own memory and refreshes the panel from it by itself. In the high power mode
+  it does that 16 to 51 times a second, as two of its registers set: 25.5 with the values Waveshare's start-up for this
+  board writes, which the clock has always used. In the low power mode it does it 0.25 to 8 times a second. A reset
+  leaves it in the high power mode; Sitronix's own sample start-up ends in the low one.
+* Waveshare's start-up sets the low power mode's rate to once a second, and never switches to it. The clock now sets it
+  to 8, the fastest there is (`FRCTRL`, `B2h` = `0x05` instead of `0x02`), and leaves the high power mode's rate alone:
+  with `display_power = normal` nothing should look different.
+* The panel is read from that memory a frame at a time in both modes (the datasheet times its tearing-effect signal at
+  32 refreshes a second and at 1), so what the clock sends shows in the low power mode too, at the next refresh.
+* The way into the low power mode, a figure in section 7.11: the source voltages, 20 ms, the switch, 100 ms; and out of
+  it: the switch, 300 ms, the voltages, 20 ms. The clock does just that (`display_power.h`, `ST7305_U8g2.cpp`), with
+  the voltages Waveshare's start-up writes, which are the same for both modes.
+* **It gives no current for either mode**, and says nothing about how the picture looks at the lower rates.
+
+**What follows from it** (worked out here, not written there): a frame is on the glass when the panel next refreshes
+it, 0 to 39 ms after it was sent at 25.5 Hz and 0 to 125 ms at 8 Hz. The clock sends every second early by half of
+that, so that the error is zero on average ([Keeping the seconds on time](#keeping-the-seconds-on-time)); in the low
+power mode it sends them 43 ms earlier still. The seconds then change up to about 63 ms before or after the real second
+instead of 20, and where in that span they land wanders slowly, because the controller refreshes by its own oscillator.
+In a simulation of the loop with the panel's refresh modelled (`tools/tests/test_logic.cpp`) they came out 1 ms early
+on average, from 64 ms early to 63 late; timed as before, at 8 Hz they would have been 43 ms late on average and up to
+107. A slower rate would save more and put the seconds a quarter of a second or more off, which is why 8 Hz is the only
+one on offer. A button press or a page change takes up to 125 ms to show instead of 39.
+
+**What it might save** (a guess; **none of it is measured**). A refresh drives every column of the panel once for each
+row, so that part of the controller's current goes with the refresh rate, and its voltage booster, oscillator and bias
+do not. The datasheet has no figures. The only ones published for this panel come with a community ESPHome driver for
+this board ([ESPHome-ST7305-RLCD](https://github.com/kylehase/ESPHome-ST7305-RLCD)): about 5 mA in the high power mode
+at 51 Hz and about 1 mA in the low one at 1 Hz, without a word on how they were found. Taken as they are and drawn as a
+straight line, 25.5 Hz is about 3 mA and 8 Hz about 1.5 mA: some 1.4 mA less at 3.3 V, **about 1 mA less at the USB
+connector**, of the 14 to 16 mA that [Light sleep](#light-sleep) expects (or the 21 mA measured without it). On the
+3400 mAh cell that would be about half a day more a week. It might as well be much less: what matters is how much of
+the board's 12 to 14 mA "rest" the display is, and nobody has measured that. A meter shows it within a minute: the
+setting takes effect at the next start (a settings file, or `set display_power = low` in the serial console, which
+restarts the clock).
+
+**How to see it working.** The *Power and settings* page has a **Display** row while `display_power = low`:
+`low power mode, 8 Hz refresh` (left out on the fullest page, with the PSRAM warning and two rows of the log). `power`
+in the serial console says which mode the panel is in and how far ahead the frames are sent. In the low-battery
+shutdown's deep sleep the panel stays in the mode it was in, and keeps refreshing the *Battery empty* screen in it.
+
+What has to be seen on the board ([TESTING.md](TESTING.md), item 38): the current with `low` and with `normal`, the
+picture at 8 Hz next to 25.5 (contrast, flicker, smearing, from the side as well), the seconds against a reference, and
+whether presses still feel immediate.
+
 ### What is switched off
 
 | Part of the board | What the clock does about it |
@@ -853,7 +912,7 @@ and the clock against a phone in the morning), and the shutdown still waking by 
 | SD card | Read once at start-up and released; the card itself keeps its supply and idles (take it out to save that) |
 | The FAT partition of the flash | Not touched, unless `power_log` is on: then one short write every ten minutes, see [The clock's own log](#the-clocks-own-log) |
 | Clock chip (PCF85063), battery divider (300 kΩ), charger, protection, the 3.3 V converter | Always on, by design: microamps |
-| The display | On, it is the clock. It keeps its picture in deep sleep |
+| The display | On, it is the clock. It keeps its picture in deep sleep. Its controller refreshes it 25.5 times a second, or 8 with `display_power = low` (in deep sleep too) |
 
 The audio chips' power-down and the levels on the I2S lines are new and, like the rest of this section, **have not been
 tried on the board**; what they save has not been measured either. The codec's datasheet says it is powered down after
@@ -864,9 +923,9 @@ down, no statement about its state after power-on was found, which is why both a
 
 What a setting saves shows in how fast the battery goes down, and the clock measures that itself. To compare settings,
 make one run with each on the same cell and write the readings into [`docs/power-log.csv`](docs/power-log.csv), one
-line per reading. The sheet comes with a line for each of six runs worth making (the stock settings with and without
-WiFi, a middle ground, the two lowest, and the lowest with light sleep): copy a run's line for every reading you take
-of it. Or let the clock do
+line per reading. The sheet comes with a line for each of seven runs worth making (the stock settings with and without
+WiFi, a middle ground, the two lowest, the lowest with light sleep, and that with the display's low power mode too):
+copy a run's line for every reading you take of it. Or let the clock do
 the writing: with `power_log = on` it keeps the same readings itself, every ten minutes, see
 [The clock's own log](#the-clocks-own-log) below.
 
@@ -883,7 +942,7 @@ the writing: with `power_log = on` it keeps the same readings itself, every ten 
 | --- | --- |
 | `test` | A name for the run, the same on all its lines |
 | `firmware` | The version and the build id, from the first line of the *System info* page: `1.6 3f9a12c` |
-| `wifi`, `wifi_mode`, `wifi_power_save`, `cpu_idle_mhz`, `spotify_live`, `console`, `light_sleep` | The settings of the run, as the settings file has them |
+| `wifi`, `wifi_mode`, `wifi_power_save`, `cpu_idle_mhz`, `spotify_live`, `console`, `light_sleep`, `display_power` | The settings of the run, as the settings file has them |
 | `battery_capacity_mah` | What is printed on the cell |
 | `card`, `music` | `in` or `out`; `none`, `playing` or `paused` |
 | `date`, `time`, `uptime` | When the reading was taken (`2026-10-08`, `14:30`), and the *Uptime* line (`0d 3h 12m`) |
@@ -908,7 +967,7 @@ ten seconds after every start, and one every ten minutes**, into a file in its o
 columns, by the same names and in the same order, so they can be pasted under the sheet's heading and one script reads
 both. It is off by default, **new in 1.7 and not yet tried on the board**.
 
-* **What it fills in.** Every column of the table that the clock can know: the firmware, the seven settings, the
+* **What it fills in.** Every column of the table that the clock can know: the firmware, the eight settings, the
   capacity (when it is set), the date and the time (only once the clock is trusted; the uptime is always there), the
   CPU clock and why it is there, the radio's share, the share asleep, the battery, the three figures of the *Left* line
   and the current,
@@ -1008,7 +1067,9 @@ both. It is off by default, **new in 1.7 and not yet tried on the board**.
 | With `light_sleep` the clock is off by seconds, or the seconds jump at the hourly sync | The chip's own clock is less exact while it sleeps, see [Light sleep](#light-sleep). The *Drift* line says by how much; set `light_sleep = off` (and with WiFi off, keep it off) |
 | With `light_sleep` a button press is missed or answered late, or late frames appear | Set `light_sleep = off` and tell someone: the rules were only checked in a simulation |
 | Seconds stutter now and then | See [Keeping the seconds on time](#keeping-the-seconds-on-time): the Info page's *Frames* and *Time* lines tell the firmware, the network and the panel apart |
-| Digits change a little early or late | Change `DISPLAY_LATENCY_MS` in `config.h` (default 20, the panel adds 0 to 39 ms on top) |
+| Digits change a little early or late | Change `DISPLAY_LATENCY_MS` in `config.h` (default 20, the panel adds 0 to 39 ms on top; with `display_power = low` 0 to 125, and the clock adds 43 ms to the setting) |
+| With `display_power = low` the picture is paler, flickers, or the digits smear or leave a ghost | The panel refreshed 8 times a second: the datasheet says nothing about the picture at that rate. Set `display_power = normal` and tell someone |
+| With `display_power = low` the seconds change a little before or after another clock's | Up to about 63 ms either way is expected, and it wanders slowly (the controller refreshes by its own oscillator); see [The display's low power mode](#the-displays-low-power-mode). An offset that stays the same is `DISPLAY_LATENCY_MS` |
 | *App owner needs Premium* | Spotify's rule for development-mode apps; see [Spotify](#spotify) |
 | *No active Spotify device* | Start playback once on any device, then use KEY |
 | *Rate limited, retry in 4h 46m* | Spotify's quota; wait it out, don't reboot repeatedly |
@@ -1017,7 +1078,7 @@ both. It is off by default, **new in 1.7 and not yet tried on the board**.
 
 Serial console commands: `status`, `battery`, `batcal V` (calibrate the battery voltage to what a tester shows, see
 [Calibrating the voltage](#calibrating-the-voltage)), `power` (the CPU clock and why it is there, the radio's share of the
-time, the console, the buttons, the audio chips, the light sleep, the power log and how long its last line took to write), `powerlog`
+time, the console, the buttons, the audio chips, the display's mode, the light sleep, the power log and how long its last line took to write), `powerlog`
 (the power log as CSV; `powerlog clear` forgets it, see [The clock's own log](#the-clocks-own-log)), `config` (every
 setting, passwords hidden), `set name = value` (one
 setting, by the name and with the rules of the SD card file: checked, saved to flash, then a restart; `set name =`
@@ -1099,6 +1160,11 @@ October showed, is in [TESTING.md](TESTING.md).
   off and put back around every sleep, how far the RC clock takes the time while the chip sleeps, and the shutdown's
   deep sleep after a run with light sleep (the sleep's ways out are switched off after each one). What it saves is an
   estimate from the datasheet and the owner's readings, see [Light sleep](#light-sleep);
+* the display's low power mode (`display_power = low`, new in 1.11): **all of it.** The timing of the frames for the
+  slower refresh runs on a PC against a model of the panel's refresh, and in the light-sleep loop above, and the sketch
+  compiles. Never run on the board: the switch between the modes, the picture at 8 Hz, what it saves, the seconds
+  against a reference. The register values and the switch are the datasheet's; what it saves is a guess, see
+  [The display's low power mode](#the-displays-low-power-mode);
 * from earlier: the Spotify linking flow, the charging indicator, `PIN_CHARGE_STATUS`.
 
 ## Files
@@ -1129,7 +1195,8 @@ October showed, is in [TESTING.md](TESTING.md).
 | `wifi_pick.h` | Which WiFi network to try next (main, backup) and when to look for the main one again |
 | `fw_logic.h`, `fw_update.h/.cpp` | Firmware update from the SD card: which file is accepted and the two passes over it, check then write (pure logic, host-tested), and the card, flash and trial minute |
 | `frame_plan.h` | When to draw the coming second and when to send it |
-| `ST7305_U8g2.*` | Display driver, derived from `10_U8G2_Test` with an inversion option |
+| `display_power.h` | `display_power`: the controller's two refresh rates, the datasheet's way from one to the other, how much later a frame shows in the low power mode (pure logic, host-tested) |
+| `ST7305_U8g2.*` | Display driver, derived from `10_U8G2_Test` with an inversion option and the low power mode |
 | `app_state.*`, `app_model.h` | Data shared between the two cores |
 | `calc.h`, `timeutil.h`, `buttons.h`, `util.h` | Pure helpers, covered by the host tests |
 | `tz_table.cpp` | Generated by `tools/gen_tz_table.py` |
@@ -1156,7 +1223,8 @@ build the sketch.
 * **`bash tools/tests/run_tests.sh`** runs the host tests: calendar and ISO week maths, every time zone rule in the table,
   the SHTC3 CRC, battery curve and humidity maths, the Open-Meteo and Spotify parsers against fixtures (including a
   recorded replies for Perth), PKCE encoding against the RFC 7636 test vector, the setup page, the button gesture detector,
-  the charging detector on simulated voltage traces and the frame scheduler on a simulated UI loop (`test_logic`); and
+  the charging detector on simulated voltage traces and the frame scheduler on a simulated UI loop, with the panel's
+  refresh modelled at both of `display_power`'s rates (`test_logic`); and
   what came with 1.3 and after (`test_features`): the settings file parser (what people type, bad values, reset, UTF-16, 3000 fuzzed
   files), the example file (it parses back to the same settings, hides passwords, and matches `docs/`), the moon against
   28 published phases, the date formats, the runtime estimate, the shutdown guard and the clock drift measurement on
@@ -1168,7 +1236,8 @@ build the sketch.
   with and without `spotify_live`), the same rules weeks into the run (where 32 bits of milliseconds wrap), the CPU
   clock and console policies, the frame planner across clock changes, and the light sleep: how long the planner may be
   left alone (probed at every turn of a simulated loop), when to sleep, the steps of one sleep against a stand-in for
-  the chip, the time of day over a simulated day, and the whole loop over hours with and without it. A fourth program (`test_builddefaults`) is built four ways, with `override_*.h` standing in for a
+  the chip, the time of day over a simulated day, and the whole loop over hours with and without it (and with the
+  timing of `display_power = low`). A fourth program (`test_builddefaults`) is built four ways, with `override_*.h` standing in for a
   `secrets.h`: nothing set (the factory build must equal the settings' own defaults), everything set (the result must
   equal the SD file `all_settings.h`, setting by setting, so a setting without a build-time default is named), mistakes
   (refused and reported) and values on the limits; it also checks that each macro is documented here and in
@@ -1192,6 +1261,20 @@ build the sketch.
 `APP_VERSION` in `config.h`. It is not semver: the number goes up by hand with each batch of changes that is handed
 over to run on a board. The *System info* page shows it together with a build id, which tells two builds of one version
 apart (*Which build is running?* under [Updating the firmware from the SD card](#updating-the-firmware-from-the-sd-card)).
+
+**1.11** (21 October 2026)
+
+* **The display's low power mode** (`display_power = low`; `normal` by default): the display's controller refreshes the
+  panel 8 times a second instead of 25.5, for less current. How much has not been measured; a guess from the only
+  published figures is about 1 mA on USB, see [The display's low power mode](#the-displays-low-power-mode). The frames
+  are sent 43 ms earlier for the slower refresh, so the seconds still change on the second on average, within about
+  63 ms instead of 20. The *Power and settings* page has a *Display* row while it is on. **Not yet tried on the board.**
+* The display's start-up sets the low power mode's rate to 8 Hz (Waveshare's sets 1 Hz there, and never switches to
+  it). The high power mode's 25.5 Hz is as before, so with `normal` nothing should look different.
+* The power log has one more column, `display_power` (the sheet too, with a seventh run). As with 1.10, the first line
+  that 1.11 writes starts a new file under the new heading, and a second, older file is deleted then: copy the log to a
+  card first if it matters. (Going from 1.9 straight to 1.11 does that once, 1.9 to 1.10 to 1.11 twice.)
+* Settings: 34.
 
 **1.10** (17 October 2026)
 

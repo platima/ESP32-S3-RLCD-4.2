@@ -36,6 +36,7 @@
 #include "clock_policy.h"
 #include "config.h"
 #include "console_policy.h"
+#include "display_power.h"
 #include "frame_plan.h"
 #include "fw_update.h"
 #include "infinity_cube.h"
@@ -224,8 +225,20 @@ static void handleBoot(ClickEvent e) {
   s_forceRedraw = true;
 }
 
+// display_power: how the controller drives the panel (its low power mode at 8 Hz, or the high one at 25.5 Hz,
+// display_power.h), and the frame timing that goes with it.  The cube runs in the high power mode whatever the
+// setting: it sends frames as fast as it can draw them, and 8 a second would make it judder.  A switch takes 120 ms
+// into the low power mode and 320 ms out of it (the datasheet's waits).
+static void applyDisplayPower() {
+  if (!s_lcd) return;
+  const bool low = g_cfg.displayPower == DISPPOWER_LOW && !s_cubeOn;
+  s_lcd->setLowPower(low);
+  s_planner.setLatencyUs(dispower::latencyUs(low, DISPLAY_LATENCY_MS * 1000));
+}
+
 static void cubeBegin(uint32_t nowMs) {
   s_cubeOn = true;
+  applyDisplayPower();
   s_cube.seed = esp_random() | 1u;  // it tumbles another way every time
   s_cube.turnMs = 0;
   s_cube.elapsedMs = 0;
@@ -235,6 +248,7 @@ static void cubeBegin(uint32_t nowMs) {
 
 static void cubeEnd() {
   s_cubeOn = false;
+  applyDisplayPower();
   s_forceRedraw = true;  // the clock again, at once
 }
 
@@ -745,6 +759,11 @@ static void buildInfoPower(UiModel &m, const SharedState &s) {
     snprintf(v, sizeof v, "at %.2f V, back on at %.2f V", (double)g_cfg.batteryCutoffV, (double)lowbat::kRestartV);
   }
   add("Shutdown", v);
+  // display_power = low: say so, and whether the panel is in it now.  (On a page with room for it and the three rows
+  // below: on the fullest page, with the PSRAM warning and the log's two rows, it is the one left out.)
+  if (g_cfg.displayPower == DISPPOWER_LOW && n < UI_INFO_LINES - 3) {
+    add("Display", s_lcd && s_lcd->lowPower() ? "low power mode, 8 Hz refresh" : "low power mode chosen, not in it");
+  }
 
   // (a line holds 42 characters of value)
   if (!g_cfg.wifi) {
@@ -1173,6 +1192,9 @@ static void serviceSerial() {
                       buttonEdgesOn() ? "read by interrupt as well (idle clock or light sleep)" : "read by the loop",
                       s_audioStandby < 0 ? "left alone (AUDIO_CHIPS_STANDBY 0)"
                                          : (s_audioStandby == (AUDIO_CODEC_ANSWERED | AUDIO_MIC_ADC_ANSWERED) ? "both powered down" : "not both answered (see the start of the log)"));
+        Serial.printf("display: %s; frames timed for %d ms on the way to the glass\n",
+                      s_lcd && s_lcd->lowPower() ? "low power mode, 8 Hz (display_power = low)" : "high power mode, 25.5 Hz",
+                      (int)(s_planner.latencyUs() / 1000));
         if (g_cfg.lightSleep) {  // (with the console on these stay at 0: the console keeps the chip awake)
           char row[lightsleep::kRow];
           lightsleep::formatRow(s_sleepStats.permille(esp_timer_get_time()), s_sleepWhy, row);
@@ -1252,6 +1274,7 @@ static void lowBatteryGate() {
   LOGF(TAG, "battery %.2f V: too low to start (%s)", b.volts, timerWake ? "timer check" : "button or power-up");
   if (!timerWake) {
     initDisplay();
+    applyDisplayPower();
     u8g2_ClearBuffer(s_u8g2);
     uiDrawBatteryEmpty(s_u8g2, b.volts, lowbat::kRestartV, true);
     u8g2_SendBuffer(s_u8g2);
@@ -1512,6 +1535,7 @@ void setup() {
   // the chip is recorded the moment it is awake (button_edges.h)
   if (g_cfg.cpuIdleMhz() > 0 || g_cfg.lightSleep) buttonEdgesBegin();
   initDisplay();
+  applyDisplayPower();  // display_power, as the settings have it now (an SD card may have changed it)
   fwUpdateFromCard(showFirmwareScreen);  // a firmware file on the card: install it and restart (else carry on)
   powerLogBegin();                       // power_log = on: the flash partition the log is kept in
   s_guard.configure(g_cfg.lowBatteryShutdown && g_cfg.hasBattery() && !s_guardOverride, g_cfg.batteryCutoffV);

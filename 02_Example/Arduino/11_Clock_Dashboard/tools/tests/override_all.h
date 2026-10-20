@@ -39,4 +39,5 @@
 #define CONSOLE_MODE "auto"
 #define POWER_LOG 1
 #define LIGHT_SLEEP 1
+#define DISPLAY_POWER "low"
 #define WEATHER_INTERVAL_MIN 30
