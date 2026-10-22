@@ -33,6 +33,11 @@ constexpr uint8_t kFrameRate = 0x05;      // FRCTRL (B2h): HFRA 0 = 25.5 Hz in H
 constexpr int32_t kHpmFrameUs = 39216;    // one refresh in HPM: 1 / 25.5 Hz
 constexpr int32_t kLpmFrameUs = 125000;   // ... in LPM: 1 / 8 Hz
 
+// For a clock that has switched itself off (the battery-empty screen, then deep sleep for as long as the cell is low,
+// which can be days): LPM at its slowest, whatever display_power says.  The picture does not change again until a
+// wake-up starts the clock afresh, and fullInit() then sets kFrameRate back, so the refresh only has to keep it there.
+constexpr uint8_t kRestFrameRate = 0x00;  // FRCTRL (B2h): HFRA 0 as in kFrameRate, LFRA 0 = 0.25 Hz in LPM
+
 // How much later a frame is on the glass in LPM than in HPM, on average: half the one refresh less half the other.
 constexpr int32_t kExtraLatencyUs = (kLpmFrameUs - kHpmFrameUs) / 2;
 

@@ -1345,6 +1345,37 @@ void testBatteryEstimateReplay() {
   }
 }
 
+// The sketch itself (the .ino, which no test compiles): every way into the deep sleep first has the panel refresh as
+// seldom as it can (displayRest(), 0.25 Hz), because the battery-empty screen stays up for as long as the clock sleeps.
+void testShutdownRestsDisplay() {
+  section("the deep-sleep shutdown rests the display first");
+  const std::string ino = readFile("../../11_Clock_Dashboard.ino");
+  int calls = 0, rested = 0;
+  for (size_t at = ino.find("powerDeepSleep("); at != std::string::npos; at = ino.find("powerDeepSleep(", at + 1)) {
+    const size_t lineStart = ino.rfind('\n', at) + 1;
+    const size_t prevStart = lineStart >= 2 ? ino.rfind('\n', lineStart - 2) + 1 : 0;
+    const std::string prev = ino.substr(prevStart, lineStart - prevStart);
+    calls++;
+    rested += prev.find("displayRest();") != std::string::npos;
+  }
+  printf("  (%d calls of powerDeepSleep, %d right after displayRest)\n", calls, rested);
+  CHECK(calls == 3 && rested == calls);
+  CHECK(ino.find("static void displayRest() {\n  if (s_lcd) s_lcd->setRestMode();\n}") != std::string::npos);
+  // (the negative control: the same scan on the sketch as it was in 1.11, without displayRest, finds 3 and 0)
+  const std::string old = [&] {
+    std::string t = ino;
+    for (size_t p; (p = t.find("displayRest();")) != std::string::npos;) t.erase(p, 14);
+    return t;
+  }();
+  int oldRested = 0;
+  for (size_t at = old.find("powerDeepSleep("); at != std::string::npos; at = old.find("powerDeepSleep(", at + 1)) {
+    const size_t lineStart = old.rfind('\n', at) + 1;
+    const size_t prevStart = old.rfind('\n', lineStart - 2) + 1;
+    oldRested += old.substr(prevStart, lineStart - prevStart).find("displayRest();") != std::string::npos;
+  }
+  CHECK(oldRested == 0);
+}
+
 // A deterministic reading source for the estimator tests.
 struct Cell {
   uint32_t rng = 12345;
@@ -4259,6 +4290,7 @@ int main(int argc, char **argv) {
   testBatteryCurve();
   testBatteryEstimate();
   testBatteryEstimateReplay();
+  testShutdownRestsDisplay();
   testLowBattery();
   testDrift();
   testSettingsTable();

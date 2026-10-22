@@ -236,6 +236,13 @@ static void applyDisplayPower() {
   s_planner.setLatencyUs(dispower::latencyUs(low, DISPLAY_LATENCY_MS * 1000));
 }
 
+// Before every deep sleep: the panel shows the battery-empty screen for as long as the clock sleeps, days perhaps,
+// and its controller stays powered, so it refreshes as seldom as it can (0.25 Hz).  A wake-up that starts the clock
+// runs fullInit() and with it the usual rate; a timer check that goes back to sleep leaves the panel alone.
+static void displayRest() {
+  if (s_lcd) s_lcd->setRestMode();
+}
+
 static void cubeBegin(uint32_t nowMs) {
   s_cubeOn = true;
   applyDisplayPower();
@@ -378,6 +385,7 @@ static void shutdownForLowBattery(float volts) {
   u8g2_ClearBuffer(s_u8g2);
   uiDrawBatteryEmpty(s_u8g2, volts, lowbat::kRestartV, true);
   u8g2_SendBuffer(s_u8g2);
+  displayRest();
   powerDeepSleep(true);
 }
 
@@ -1159,6 +1167,7 @@ static void serviceSerial() {
         u8g2_ClearBuffer(s_u8g2);
         uiDrawBatteryEmpty(s_u8g2, s_batVolts, lowbat::kRestartV, true);
         u8g2_SendBuffer(s_u8g2);
+        displayRest();
         powerDeepSleep(false);
       } else if (!strcmp(buf, "config")) {
         char sum[96];
@@ -1295,6 +1304,7 @@ static void lowBatteryGate() {
       delay(20);
     }
   }
+  displayRest();  // (nothing on a timer check: the display was not started, and it still rests from before)
   powerDeepSleep(true);
 }
 

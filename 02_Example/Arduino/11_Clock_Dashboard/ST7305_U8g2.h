@@ -54,6 +54,11 @@ public:
   void setLowPower(bool low);
   bool lowPower() const { return _lowPower; }
 
+  // For the deep-sleep shutdown: the low power mode at its slowest refresh, 0.25 Hz (display_power.h), with the
+  // picture left as it is.  The rate is written in the high power mode, as fullInit() writes it, so it takes up to
+  // 440 ms.  Lasts until fullInit() runs again.
+  void setRestMode();
+
   // begin() opens one SPI transaction and keeps it open, which holds the SPI peripheral's lock
   // for good and keeps every transfer cheap.  The lock is not recursive, so whatever else needs
   // it from the same task has to let go first: changing the CPU clock (the core tells every SPI

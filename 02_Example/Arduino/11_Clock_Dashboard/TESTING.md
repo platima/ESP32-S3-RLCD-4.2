@@ -129,3 +129,15 @@ the analogue clock's outline (1.9) and both cubes with their buttons (1.8, 1.9).
     * The cubes: they run in the high power mode, so they should look as smooth as with `normal`; starting one takes
       about a third of a second longer, and afterwards the *Display* row is back.
     * After a day: the *Frames* line, no more late frames than without it.
+
+## The display at rest during the shutdown (1.12)
+
+39. **Not yet.** Before every deep sleep the panel goes to its slowest refresh, 0.25 Hz, whatever `display_power` says.
+    `sleeptest` in the serial console shows it without a flat battery (KEY or five minutes wake it); the next run down
+    to the shutdown shows it as it is meant.
+    * The *Battery empty* screen at that rate: still readable, no fading or flicker between the refreshes, no ghost
+      once the clock starts again.
+    * It stays up through the five-minutely looks at the battery (they should leave the panel alone), over a night.
+    * KEY: the screen comes back at the usual rate for its eight seconds, and the clock that starts (after charging,
+      or with KEY held for three seconds) looks as before.
+    * If there is a meter in the battery's lead: the sleeping current, with this and (`sleeptest` on 1.11) without it.

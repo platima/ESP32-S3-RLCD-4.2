@@ -1291,6 +1291,9 @@ static void testFramePlanPanel() {
   using P = FramePlanner;
   // the register and the figures: 25.5 Hz in the high power mode as before (HFRA 0), 8 Hz in the low one (LFRA 5)
   CHECK((dispower::kFrameRate & 0x10) == 0 && (dispower::kFrameRate & 0x07) == 5 && (dispower::kFrameRate & 0xE8) == 0);
+  // for the deep-sleep shutdown: the same high power rate, the low one at its slowest (LFRA 0 = 0.25 Hz), nothing else
+  CHECK((dispower::kRestFrameRate & 0x10) == (dispower::kFrameRate & 0x10) && (dispower::kRestFrameRate & 0x07) == 0 &&
+        (dispower::kRestFrameRate & 0xE8) == 0);
   CHECK(dispower::latencyUs(false, 20000) == 20000);
   CHECK(dispower::latencyUs(true, 20000) == 20000 + dispower::kExtraLatencyUs);
   CHECK(dispower::kExtraLatencyUs > 42000 && dispower::kExtraLatencyUs < 43500);  // (125 - 39.2) / 2 ms

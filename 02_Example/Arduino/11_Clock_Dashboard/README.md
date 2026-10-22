@@ -1,7 +1,7 @@
 # 11_Clock_Dashboard
 
 A desk clock for the Waveshare ESP32-S3-RLCD-4.2: it joins your WiFi, sets the time over NTP, works out the
-time zone (including daylight saving) by itself, and shows everything on the reflective LCD. Version **1.11**
+time zone (including daylight saving) by itself, and shows everything on the reflective LCD. Version **1.12**
 ([what changed](#versions)).
 
 <img src="docs/dashboard.png" alt="Dashboard" width="560">
@@ -584,7 +584,8 @@ A bare LiPo with no protection board is ruined by being run flat. The board has 
 but it cuts off abruptly and a lot lower, so the **software stops first**:
 
 * when the battery stays under `battery_cutoff_v` (3.30 V, measured while the clock runs) for a minute and the clock is not
-  charging, it draws a *Battery empty* screen (which stays on the panel) and goes into deep sleep;
+  charging, it draws a *Battery empty* screen (which stays on the panel, refreshed only every four seconds: see
+  [The display's low power mode](#the-displays-low-power-mode)) and goes into deep sleep;
 * every five minutes it wakes for a moment to look at the battery, and it **starts again only above 3.70 V**, which means
   after charging: a cell that has just been relieved of the load springs back by a hundred millivolts or more, so
   restarting at the cut-off would boot, sag, shut down and repeat;
@@ -902,8 +903,13 @@ restarts the clock).
 
 **How to see it working.** The *Power and settings* page has a **Display** row while `display_power = low`:
 `low power mode, 8 Hz refresh` (left out on the fullest page, with the PSRAM warning and two rows of the log). `power`
-in the serial console says which mode the panel is in and how far ahead the frames are sent. In the low-battery
-shutdown's deep sleep the panel stays in the mode it was in, and keeps refreshing the *Battery empty* screen in it.
+in the serial console says which mode the panel is in and how far ahead the frames are sent.
+
+**At the shutdown**, whatever `display_power` says (since 1.12): before the deep sleep the clock puts the panel into the
+low power mode at its slowest, **0.25 Hz**, once every four seconds. The *Battery empty* screen then stays on the glass
+for as long as the clock sleeps, which can be days, and nothing on it changes, so the refresh only has to keep it
+there. A wake-up that starts the clock sets the usual rate again; the five-minutely look at the battery leaves the panel
+alone. How the screen looks at 0.25 Hz, and what it saves, has not been seen on the board.
 
 What has to be seen on the board ([TESTING.md](TESTING.md), item 38): the current with `low` and with `normal`, the
 picture at 8 Hz next to 25.5 (contrast, flicker, smearing, from the side as well), the seconds against a reference, and
@@ -1112,7 +1118,8 @@ October showed, is in [TESTING.md](TESTING.md).
   in force, and found unchanged in the file, at the next start). How long the clock takes to notice that no card is in
   the slot is unknown;
 * the deep-sleep shutdown: the pins held through the sleep, the wake-up by timer and by KEY, the 3 second
-  override, and what the sleeping board draws (`sleeptest` in the serial console tries it without a flat battery).
+  override, the display resting at 0.25 Hz meanwhile (new in 1.12), and what the sleeping board draws (`sleeptest` in
+  the serial console tries it without a flat battery).
   **Seen on the board (20 October 2026): the low-battery blink, then the battery-empty screen as the clock shut itself
   down at 3.30 V;**
 * a `cpu_mhz` change from the SD card file while the display is already running (the display driver has to let go of the
@@ -1276,6 +1283,15 @@ build the sketch.
 `APP_VERSION` in `config.h`. It is not semver: the number goes up by hand with each batch of changes that is handed
 over to run on a board. The *System info* page shows it together with a build id, which tells two builds of one version
 apart (*Which build is running?* under [Updating the firmware from the SD card](#updating-the-firmware-from-the-sd-card)).
+
+**1.12** (23 October 2026)
+
+* **The display rests during the low-battery shutdown.** The *Battery empty* screen stays on the panel for as long as
+  the clock sleeps, days perhaps, and the display's controller went on refreshing it 25.5 times a second (or 8 with
+  `display_power = low`). Before every deep sleep it now goes into its low power mode at the slowest rate, once every
+  four seconds, whatever `display_power` says; a wake-up that starts the clock sets the usual rate again. See
+  [The display's low power mode](#the-displays-low-power-mode). **Not yet tried on the board**: how the screen looks at
+  that rate, and what it saves.
 
 **1.11** (22 October 2026)
 

@@ -273,6 +273,14 @@ void ST7305_U8g2::setLowPower(bool low)
   _lowPower = low;
 }
 
+void ST7305_U8g2::setRestMode()
+{
+  setLowPower(false);
+  const uint8_t b2[] = {dispower::kRestFrameRate};
+  _cmd_data(0xB2, b2, sizeof(b2));
+  setLowPower(true);
+}
+
 void ST7305_U8g2::fullInit()
 {
   reset();
