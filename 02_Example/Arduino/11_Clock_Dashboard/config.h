@@ -19,7 +19,7 @@
 // Not semver: 1.0 was the first release, and the number goes up by hand with every batch of changes that is
 // handed over to run on a board (README: "Versions").  Two builds of one version are told apart by the build
 // id next to it on the System info page, which changes whenever the program does.
-#define APP_VERSION "1.10"
+#define APP_VERSION "1.11"
 
 // The settings file the clock looks for in the root of the SD card, and writes (with every
 // setting explained) when the card has none.  Upper or lower case, it is FAT.
@@ -149,9 +149,10 @@
 #define CLOCK_SWEEP_FPS 0
 
 // The next second is drawn ahead of time and sent so that the transfer ends this long
-// before the second starts.  The panel refreshes itself at about 25 Hz (every 39 ms),
+// before the second starts.  The panel refreshes itself at 25.5 Hz (every 39 ms),
 // so a frame shows up 0-39 ms after it has been sent; half of that makes the average
-// error zero.  Raise it if the digits seem to change late, lower it if early.
+// error zero.  Raise it if the digits seem to change late, lower it if early.  With
+// DISPLAY_POWER "low" the panel refreshes at 8 Hz and the clock adds 43 ms to it.
 #define DISPLAY_LATENCY_MS 20
 
 // ----------------------------------------------------------------------------
@@ -257,6 +258,23 @@
 // second of flash writing (README: "Logging a battery run").  Not yet tried on the board.
 #ifndef POWER_LOG
 #define POWER_LOG 0
+#endif
+
+// 1 = between the frames, once a second, the processor goes into light sleep instead of idling, whenever nothing needs
+// it awake: the radio off (WIFI_ENABLED 0, or between the syncs of WIFI_MODE "sync"), the console shut down
+// (CONSOLE_MODE "auto" or "off"), no button pressed for 8 seconds.  KEY and BOOT wake it at once.  While it sleeps its
+// clock runs on an RC oscillator inside the chip, calibrated before every sleep but less exact than the crystal: the
+// hourly network time puts it right, and without WiFi nothing does.  Not yet tried on the board (README: "Light sleep").
+#ifndef LIGHT_SLEEP
+#define LIGHT_SLEEP 0
+#endif
+
+// "normal" or "low": how the display's controller (ST7305) drives the panel.  "low" = its low power mode, which
+// refreshes the panel 8 times a second instead of 25.5: less current (how much has not been measured), and a frame
+// shows up 0 to 125 ms after it was sent instead of 0 to 39, which the frame timing allows for (DISPLAY_LATENCY_MS
+// and 43 ms more, display_power.h).  Not yet tried on the board (README: "The display's low power mode").
+#ifndef DISPLAY_POWER
+#define DISPLAY_POWER "normal"
 #endif
 
 // The audio chips on the board (a codec, a microphone ADC, an amplifier) are not used by the clock.  1 = at

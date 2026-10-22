@@ -1,16 +1,22 @@
 // Host-side tests of the power logic that is not the settings: when the radio is on in "wifi_mode = sync"
 // (radio_plan.h), which CPU clock the clock runs at (clock_policy.h), when the console is shut down
-// (console_policy.h), the picker across radio sessions (wifi_pick.h) and the frame planner after a clock change
-// (frame_plan.h).  Built and run by run_tests.sh.
+// (console_policy.h), the picker across radio sessions (wifi_pick.h), the frame planner after a clock change
+// (frame_plan.h), and the light sleep between the frames (light_sleep.h).  Built and run by run_tests.sh.
 
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
+#include <algorithm>
+#include <string>
+#include <vector>
+
 #include "check.h"
 #include "clock_policy.h"
 #include "console_policy.h"
+#include "display_power.h"
 #include "frame_plan.h"
+#include "light_sleep.h"
 #include "radio_plan.h"
 #include "settings.h"
 #include "wifi_pick.h"
@@ -1208,6 +1214,683 @@ void testFramePlanClock() {
   CHECK(lateFrames <= 2);  // a frame or two at the moment of a switch is what it costs; the rest is on time
 }
 
+// ---------------------------------------------------------------------------
+// Light sleep (light_sleep.h)
+// ---------------------------------------------------------------------------
+
+struct Rng {
+  uint64_t s;
+  explicit Rng(uint64_t seed) : s(seed * 0x9E3779B97F4A7C15ull + 7) {}
+  double uni() {
+    s = s * 6364136223846793005ull + 1442695040888963407ull;
+    return (double)(s >> 11) / 9007199254740992.0;
+  }
+};
+
+void splitUs(int64_t us, time_t *sec, int32_t *usec) {
+  *sec = (time_t)(us / 1000000);
+  *usec = (int32_t)(us % 1000000);
+}
+
+// FramePlanner::idleUs(): for as long as it says, next() asks for nothing but naps, and once that time is up it asks
+// for a step.  The planner is driven the way the sketch drives it, at `mhz` (a frame costs 80 / mhz times as much),
+// and probed at every turn of the loop.  Returns the number of probes where `idle` (the planner's own, or a wrong one
+// that shows this can fail) is not borne out.  `latencyUs`: the planner's time to the glass (display_power.h); with
+// `switchHalfway` it changes to the other mode's figure half-way through, as a switch of display_power would.
+template <class Idle>
+int idleMisses(Idle idle, int mhz, uint64_t seed, int *probesOut = nullptr, int32_t latencyUs = 20000, bool switchHalfway = false) {
+  FramePlanner p(latencyUs);
+  if (mhz != 80) p.clockChanged(80, (uint32_t)mhz);
+  Rng r(seed);
+  const double f = 80.0 / mhz;
+  int64_t t = 1700000000LL * 1000000LL + 345678;
+  int misses = 0, probes = 0;
+  auto probe = [&](int64_t at, bool wantStep) {
+    time_t s;
+    int32_t u;
+    splitUs(at, &s, &u);
+    FramePlanner q = p;  // (next() is asked of a copy: the probe must not change the plan)
+    const FramePlanner::Action a = q.next(s, u, false).action;
+    const bool step = a != FramePlanner::IDLE && a != FramePlanner::SLEEP;
+    probes++;
+    if (step != wantStep) misses++;
+  };
+  for (int turn = 0; turn < 6000; turn++) {
+    if (switchHalfway && turn == 3000) p.setLatencyUs(p.latencyUs() == 20000 ? dispower::latencyUs(true, 20000) : 20000);
+    time_t sec;
+    int32_t usec;
+    splitUs(t, &sec, &usec);
+    const int32_t id = idle(p, sec, usec);
+    if (id > 0) {
+      for (int32_t d : {0, id / 3, id / 2, id - 1}) probe(t + d, false);  // naps only, until then ...
+    }
+    probe(t + (id > 0 ? id : 0), true);  // ... and a step once it is up
+    const FramePlanner::Step st = p.next(sec, usec, false);
+    auto draw = [&](time_t s, bool scheduled) {
+      const int64_t c = (int64_t)(30000 * f * (0.9 + 0.2 * r.uni()));
+      t += c;
+      p.drew(s, (uint32_t)c, scheduled);
+    };
+    auto send = [&]() {
+      const int64_t c = (int64_t)(15000 * f * (0.9 + 0.2 * r.uni()));
+      t += c;
+      p.sent((uint32_t)c);
+    };
+    switch (st.action) {
+      case FramePlanner::DRAW_NOW:
+        draw(st.sec, false);
+        send();
+        break;
+      case FramePlanner::PREPARE:
+        draw(st.sec, true);
+        break;
+      case FramePlanner::SEND:
+        t += st.waitUs;
+        send();
+        break;
+      default:  // a nap of 1 to 4 ms, or now and then a sleep of up to the whole idle time (as light sleep does)
+        t += r.uni() < 0.2 && id > 2000 ? (int64_t)(id * r.uni()) : 1000 + (int64_t)(3000 * r.uni());
+        break;
+    }
+  }
+  if (probesOut) *probesOut = probes;
+  return misses;
+}
+
+void testFramePlanIdle() {
+  section("frame plan: how long the loop may sleep");
+  auto real = [](const FramePlanner &p, time_t s, int32_t u) { return p.idleUs(s, u); };
+  for (int mhz : {80, 40, 20}) {
+    int probes = 0;
+    const int misses = idleMisses(real, mhz, 11 + (uint64_t)mhz, &probes);
+    if (misses) printf("  %d MHz: %d of %d probes miss\n", mhz, misses, probes);
+    CHECK(misses == 0 && probes > 20000);
+  }
+  for (bool halfway : {false, true}) {  // display_power = low: 43 ms more to the glass, from the start or from half-way
+    int probes = 0;
+    const int misses = idleMisses(real, 20, 5, &probes, dispower::latencyUs(true, 20000), halfway);
+    if (misses) printf("  display_power = low%s: %d of %d probes miss\n", halfway ? ", switched half-way" : "", misses, probes);
+    CHECK(misses == 0 && probes > 20000);
+  }
+  // the probes can fail: three ways of getting it wrong, each caught
+  auto noSpin = [](const FramePlanner &p, time_t s, int32_t u) {  // the send that is spun counted as idle time
+    const int32_t id = p.idleUs(s, u);
+    return p.prepared() && id > 0 ? id + FramePlanner::kSpinUs : id;
+  };
+  auto outAlready = [](const FramePlanner &p, time_t s, int32_t u) {  // the second that is out already taken for the next
+    if (!p.prepared() && p.lastSentSec() == s + 1) {
+      const int32_t lead = (int32_t)(p.sendCostUs() + p.drawCostUs()) + p.latencyUs() + FramePlanner::kMarginUs;
+      return 1000000 - u > lead ? 1000000 - u - lead : 0;
+    }
+    return p.idleUs(s, u);
+  };
+  auto fixedCost = [](const FramePlanner &p, time_t s, int32_t u) {  // the costs of 80 MHz, whatever the clock
+    if (!p.prepared() && p.lastSentSec() == s) {
+      const int32_t lead = 15000 + p.latencyUs() + 30000 + FramePlanner::kMarginUs;
+      return 1000000 - u > lead ? 1000000 - u - lead : 0;
+    }
+    return p.idleUs(s, u);
+  };
+  CHECK(idleMisses(noSpin, 80, 3) > 100);
+  CHECK(idleMisses(outAlready, 80, 3) > 100);
+  CHECK(idleMisses(fixedCost, 20, 3) > 100);
+  // (and the clock going backwards: a frame prepared for a second that is far ahead is due for a fresh start now)
+  FramePlanner b(20000);
+  b.drew(2000, 30000, true);
+  CHECK(b.idleUs(1000, 500000) == 0);
+}
+
+void testLightSleepDecide() {
+  section("light sleep: when, and for how long");
+  using namespace lightsleep;
+  using lightsleep::Inputs;  // (not radioplan's)
+  Inputs base;
+  base.enabled = true;
+  base.frameInUs = 700000;
+  {
+    const Decision d = decide(base);  // nothing in the way: up to the next frame step, less the guard
+    CHECK(d.sleep && d.why == ASLEEP && d.us == 700000 - kGuardUs - 700000 / 128);
+  }
+  // what keeps it awake, one at a time, and the reason it gives
+  struct Case {
+    const char *what;
+    Inputs in;
+    Why why;
+  };
+  std::vector<Case> cases;
+  auto with = [&](const char *what, Why why, void (*set)(Inputs &)) {
+    Inputs in = base;
+    set(in);
+    cases.push_back({what, in, why});
+  };
+  with("off", OFF, [](Inputs &i) { i.enabled = false; });
+  with("radio", RADIO, [](Inputs &i) { i.radio = true; });
+  with("console", CONSOLE, [](Inputs &i) { i.console = true; });
+  with("button down", BUTTON, [](Inputs &i) { i.button = true; });
+  with("poke window", BUTTON, [](Inputs &i) { i.poked = true; });
+  with("busy", BUSY, [](Inputs &i) { i.busy = true; });
+  with("refused a moment ago", REFUSED, [](Inputs &i) { i.backOff = true; });
+  with("work that can run now", WORK, [](Inputs &i) { i.workInUs = 0; });
+  with("frame step now", SOON, [](Inputs &i) { i.frameInUs = 0; });
+  with("frame step close", SOON, [](Inputs &i) { i.frameInUs = kMinSleepUs + kGuardUs; });
+  with("banner due now", SOON, [](Inputs &i) { i.otherInUs = 0; });
+  with("banner due soon", SOON, [](Inputs &i) { i.otherInUs = 10000; });
+  with("work's part of the second close", SOON, [](Inputs &i) { i.workInUs = 15000; });
+  for (const Case &c : cases) {
+    const Decision d = decide(c.in);
+    if (d.sleep || d.why != c.why) printf("  %s: sleep %d, why %d (wanted %d)\n", c.what, d.sleep, (int)d.why, (int)c.why);
+    CHECK(!d.sleep && d.why == c.why);
+  }
+  // when there are several, the first of: off, radio, console, button, busy, refused, work, soon
+  {
+    Inputs all = base;
+    all.radio = all.console = all.button = all.poked = all.busy = all.backOff = true;
+    all.workInUs = 0;
+    CHECK(decide(all).why == RADIO);
+    all.radio = false;
+    CHECK(decide(all).why == CONSOLE);
+    all.console = false;
+    CHECK(decide(all).why == BUTTON);
+    all.button = all.poked = false;
+    CHECK(decide(all).why == BUSY);
+    all.busy = false;
+    CHECK(decide(all).why == REFUSED);
+    all.backOff = false;
+    CHECK(decide(all).why == WORK);
+    all.enabled = false;
+    all.radio = true;
+    CHECK(decide(all).why == OFF);
+  }
+  // the earliest of the three times counts; the guard is taken off it; never longer than kMaxSleepUs
+  {
+    Inputs in = base;
+    in.workInUs = 400000;
+    CHECK(decide(in).us == 400000 - kGuardUs - 400000 / 128);
+    in.otherInUs = 300000;
+    CHECK(decide(in).us == 300000 - kGuardUs - 300000 / 128);
+    in.frameInUs = 250000;
+    CHECK(decide(in).us == 250000 - kGuardUs - 250000 / 128);
+    Inputs far = base;
+    far.frameInUs = 1900000000;  // (the planner never says more than about two seconds, but)
+    CHECK(decide(far).us == kMaxSleepUs - kGuardUs - kMaxSleepUs / 128);
+    Inputs none = base;  // no work due, no banner: those two do not shorten it
+    none.workInUs = kNever;
+    none.otherInUs = kNever;
+    CHECK(decide(none).us == decide(base).us);
+  }
+  // the shortest sleep there is, to the microsecond
+  {
+    Inputs in = base;
+    int32_t first = -1;
+    for (int32_t ahead = 0; ahead < 60000 && first < 0; ahead++) {
+      in.frameInUs = ahead;
+      const Decision d = decide(in);
+      if (d.sleep) first = ahead;
+    }
+    in.frameInUs = first;
+    CHECK(first > kMinSleepUs + kGuardUs && decide(in).us == kMinSleepUs);
+    in.frameInUs = first - 1;
+    CHECK(!decide(in).sleep);
+  }
+  // wifi off and wifi_mode = sync differ only in whether the radio is ever on; always mode never sleeps
+  {
+    Inputs wifiOff = base, syncBetween = base, syncSession = base;
+    syncSession.radio = true;
+    CHECK(decide(wifiOff).sleep && decide(syncBetween).sleep && !decide(syncSession).sleep);
+  }
+  // the row of the Power and settings page: whole for every reason and every share, and saying why when it is worth it
+  {
+    char row[kRow];
+    int whole = 0, cut = 0;
+    for (int why = ASLEEP; why <= REFUSED; why++) {
+      for (int p : {0, 1, 9, 10, 785, 999, 1000, 1001, 65535}) {
+        formatRow((uint16_t)p, (Why)why, row);
+        const size_t n = strlen(row);
+        n + 1 < kRow && row[n - 1] != '(' ? whole++ : cut++;
+        CHECK(strstr(row, "% of the time") != nullptr);
+      }
+    }
+    CHECK(cut == 0 && whole == 9 * 9);
+    formatRow(785, ASLEEP, row);
+    CHECK_STR(row, "78.5 % of the time");
+    formatRow(785, SOON, row);
+    CHECK_STR(row, "78.5 % of the time");
+    formatRow(785, WORK, row);
+    CHECK_STR(row, "78.5 % of the time");
+    formatRow(0, RADIO, row);
+    CHECK_STR(row, "0.0 % of the time (now: radio on)");
+    formatRow(1000, BUTTON, row);
+    CHECK_STR(row, "100.0 % of the time (now: button pressed)");
+    formatRow(5000, CONSOLE, row);  // (more than all of it cannot be)
+    CHECK_STR(row, "100.0 % of the time (now: console on)");
+    formatRow(312, REFUSED, row);
+    CHECK_STR(row, "31.2 % of the time (now: SDK refused)");
+  }
+}
+
+// A stand-in for the chip: it writes down the calls of a nap, in order, as letters.
+struct FakeChip {
+  std::string calls;
+  bool down = false;          // a button is down when asked
+  int err = 0;                // what sleep() returns
+  bool byButton = false;      // ... and what ended it
+  bool armed = false;
+  int64_t mono = 5000000, wall = 1700000000LL * 1000000LL;
+  int64_t sdkJumpUs = 0;      // what the SDK adds to the time of day at the next wake-up (the RC count of the time awake)
+  int64_t sleptUs = 0;
+  void wakeOnButtons(bool on) {
+    calls += on ? "A" : "a";
+    armed = on;
+  }
+  bool buttonDown() {
+    calls += "D";
+    return down;
+  }
+  int sleep(int32_t us) {
+    calls += armed ? "S" : "S!";  // (a sleep with the buttons not armed would be one that only the timer can end)
+    if (err) return err;
+    if (byButton) us /= 2;  // (a press ends it half way)
+    mono += us;
+    wall += us + sdkJumpUs;
+    sdkJumpUs = 0;
+    sleptUs += us;
+    return 0;
+  }
+  bool wokeByButton() {
+    calls += "B";
+    return byButton;
+  }
+  int64_t monoUs() { return mono; }
+  int64_t wallUs() { return wall; }
+  void shiftWallUs(int64_t d) {
+    calls += "W";
+    wall += d;
+  }
+  void awake(int64_t us) {  // time passes with the chip awake
+    mono += us;
+    wall += us;
+  }
+};
+
+void testNapSteps() {
+  section("light sleep: the steps of a nap");
+  using namespace lightsleep;
+  {  // the usual one: buttons armed, a look at them, the sleep, what ended it, the buttons back
+    FakeChip c;
+    WallFix fix;
+    const Nap n = napOnce(c, fix, 600000);
+    CHECK(c.calls == "ADSBa");
+    CHECK(n.slept && !n.byButton && !n.pressed && n.err == 0 && n.us == 600000 && n.wallFixUs == 0 && c.sleptUs == 600000);
+  }
+  {  // ended by a button
+    FakeChip c;
+    c.byButton = true;
+    WallFix fix;
+    const Nap n = napOnce(c, fix, 600000);
+    CHECK(c.calls == "ADSBa" && n.slept && n.byButton && n.us == 300000);
+  }
+  {  // a button went down just before: no sleep, the buttons as they were, nothing else touched
+    FakeChip c;
+    c.down = true;
+    WallFix fix;
+    const int64_t wall = c.wall, mono = c.mono;
+    const Nap n = napOnce(c, fix, 600000);
+    CHECK(c.calls == "ADa" && !n.slept && n.pressed && n.err == 0 && n.us == 0 && c.wall == wall && c.mono == mono && !c.armed);
+  }
+  {  // the SDK refuses: the buttons back, the time of day left alone (the SDK does not touch it then either)
+    FakeChip c;
+    c.err = 0x103;
+    c.sdkJumpUs = 50000;
+    WallFix fix;
+    const Nap n = napOnce(c, fix, 600000);
+    CHECK(c.calls == "ADSa" && !n.slept && n.err == 0x103 && !c.armed && fix.pendingUs() == 0);
+  }
+  {  // the time of day: what the SDK added beyond the time asleep is taken off again once it adds up to kWallStepUs
+    FakeChip c;
+    WallFix fix;
+    c.sdkJumpUs = 1500;
+    Nap n = napOnce(c, fix, 600000);
+    CHECK(c.calls == "ADSBa" && n.wallFixUs == 0 && fix.pendingUs() == -1500);
+    c.calls.clear();
+    c.sdkJumpUs = 700;
+    n = napOnce(c, fix, 600000);
+    CHECK(c.calls == "ADSBaW" && n.wallFixUs == -2200 && fix.pendingUs() == 0 && fix.fixes() == 1 && fix.largestUs() == 2200);
+    CHECK(c.wall - c.mono == 1700000000LL * 1000000LL - 5000000);  // back in step with the timer
+    c.calls.clear();
+    c.sdkJumpUs = -40000;  // a big one the other way (an hour awake, with the RC clock slow): at once
+    n = napOnce(c, fix, 600000);
+    CHECK(c.calls == "ADSBaW" && n.wallFixUs == 40000 && fix.largestUs() == 40000 && c.wall - c.mono == 1700000000LL * 1000000LL - 5000000);
+  }
+  // the share of the time asleep
+  {
+    Stats st;
+    CHECK(st.permille(1000000) == 0);
+    st.begin(1000000);
+    st.begin(5000000);  // (only the first counts)
+    Nap a;
+    a.slept = true;
+    a.us = 785000;
+    st.add(a);
+    CHECK(st.permille(2000000) == 785 && st.naps() == 1);
+    Nap b = a;
+    b.byButton = true;
+    b.us = 2000000;
+    st.add(b);
+    CHECK(st.permille(4000000) == 928 && st.buttonWakes() == 1);  // 2.785 of 3 s
+    Nap refused;
+    refused.err = 0x103;
+    st.add(refused);
+    Nap pressed;
+    pressed.pressed = true;
+    st.add(pressed);
+    CHECK(st.refused() == 1 && st.naps() == 2);
+    CHECK(st.permille(1000000) == 0 && st.permille(3000000) == 1000);  // (never more than all of it, nor less than none)
+  }
+}
+
+// What the time of day comes to over a day of naps, with the SDK taking it afresh from the RC count at every wake-up
+// (the RC oscillator `ppm` off over the time awake) and a fix of the kind given.  Returns the worst error against the
+// true time, in microseconds.  Sleeps are 700 ms, awake 300 ms, and twice an hour the clock stays awake for minutes.
+template <class Fix>
+int64_t wallError(Fix &fix, double ppm, uint64_t seed) {
+  FakeChip c;
+  Rng r(seed);
+  const int64_t offset = c.wall - c.mono;  // the true time of day is the timer plus this
+  int64_t worst = 0, awakeUs = 0;
+  for (int i = 0; i < 86400; i++) {
+    int64_t awake = 250000 + (int64_t)(100000 * r.uni());
+    if (i % 1800 == 900) awake += (int64_t)(600 * 1000000LL * r.uni());  // ten minutes of music, a session, a long press
+    c.awake(awake);
+    awakeUs += awake;
+    c.sdkJumpUs = (int64_t)(awakeUs * ppm / 1e6);  // the RC's count of the time awake since the last wake-up, off by ppm
+    awakeUs = 0;
+    lightsleep::napOnce(c, fix, 700000);
+    const int64_t err = (c.wall - c.mono) - offset;
+    if ((err < 0 ? -err : err) > worst) worst = err < 0 ? -err : err;
+  }
+  return worst;
+}
+
+// Two wrong fixes, to show that the check below can fail: none at all (the SDK alone), and one that drops what is too
+// small to be worth a correction instead of keeping it until it adds up.
+struct NoFix {
+  int64_t add(int64_t, int64_t, int64_t, int64_t) { return 0; }
+};
+struct DropSmall {
+  int64_t add(int64_t w0, int64_t m0, int64_t w1, int64_t m1) {
+    const int64_t d = (w0 + (m1 - m0)) - w1;
+    return d >= lightsleep::kWallStepUs || d <= -lightsleep::kWallStepUs ? d : 0;
+  }
+};
+
+void testWallFix() {
+  section("light sleep: the time of day");
+  for (double ppm : {300.0, -300.0, 5000.0, -50.0}) {
+    lightsleep::WallFix fix;
+    const int64_t worst = wallError(fix, ppm, 5);
+    printf("  RC %+.0f ppm over the time awake: worst %.2f ms off in a day with the fix, %u corrections\n", ppm, worst / 1000.0,
+           (unsigned)fix.fixes());
+    CHECK(worst <= lightsleep::kWallStepUs);
+    NoFix none;
+    DropSmall drop;
+    const int64_t without = wallError(none, ppm, 5), dropped = wallError(drop, ppm, 5);
+    if (ppm == 300.0) printf("  ... without it %.0f ms, dropping the small ones %.0f ms\n", without / 1000.0, dropped / 1000.0);
+    CHECK(without > 10 * lightsleep::kWallStepUs);  // (the check can fail)
+    if (ppm != 5000.0) CHECK(dropped > 10 * lightsleep::kWallStepUs);  // (5000 ppm: every one is big enough, so dropping costs little)
+  }
+}
+
+// The UI loop with light sleep, as the sketch runs it (11_Clock_Dashboard.ino, loop() and lightSleepStep()): the frame
+// planner, the slow work in its part of the second, a line of the power log every ten minutes, a banner, button
+// presses, radio sessions with the clock at 80 MHz, and the idle clock in between.  A frame costs 30 ms to draw and
+// 15 to send at 80 MHz, 80 / MHz times as much below.  A light sleep takes 5 ms of the chip awake on the way (the SDK
+// calibrates the RC clock for some 4 ms, and takes that off the time asked for), and wakes up to 1 ms early or 2 ms
+// late, give or take 0.2 % of its length.  Stalls (a flash write, the radio stack: work of the other core) come at
+// random moments while the chip is awake; while it sleeps the other core sleeps too.
+struct SleepLoop {
+  bool lightSleep = true;
+  int idleMhz = 20;
+  int32_t latencyUs = 20000;   // the planner's time to the glass (display_power.h)
+  double stallEverySec = 0;    // stalls of 20 to 300 ms, about this often in the time awake (0: none)
+  double pressEverySec = 600;  // a button press about this often
+  // what came of it
+  int frames = 0, late = 0, presses = 0, logLines = 0, sleeps = 0;
+  int64_t worstLateUs = 0, worstBatteryGapUs = 0, worstLogLateUs = 0;
+  int64_t worstBannerUs = 0;        // from the moment a banner should come down to the redraw, the worst ...
+  int64_t worstBannerIdleUs = -1;   // ... of those that came down with no button pressed for a while (light sleep in play)
+  int64_t worstPressUs = 0;         // from a press to the loop taking it, the worst of all
+  int64_t worstPressAsleepUs = -1;  // ... of those that came while the chip slept (-1: none did)
+  int64_t asleepUs = 0, workUs = 0, idleUs = 0, totalUs = 0;
+  double chipMa = 0;  // the chip's average current by the datasheet: working, awake and idle, or in light sleep
+
+  void run(int seconds, uint64_t seed) {
+    Rng r(seed);
+    FramePlanner p(latencyUs);
+    int mhz = 80;
+    int64_t t = 1700000000LL * 1000000LL + 250000;
+    const int64_t start = t, end = t + (int64_t)seconds * 1000000;
+    int64_t nextStall = stallEverySec > 0 ? t + (int64_t)(stallEverySec * 1e6 * r.uni() * 2) : INT64_MAX;
+    int64_t lastBattery = 0, lastSensor = 0, nextLog = t + 10 * 1000000LL, pokeUntil = 0, bannerUntil = t + 6000000;
+    int64_t nextPress = t + 40 * 1000000LL;  // (the first one soon, so that every run has some)
+    bool force = true, pressWokeIt = false;
+    // ESP32-S3 datasheet v2.2, table 5-9 (radio off, peripheral clocks off): idle 22.0 / 13.2 mA and one core working
+    // 28.4 / 16.2 mA at 80 / 40 MHz; 20 MHz is drawn out along the same line (Espressif gives nothing below 40)
+    auto mA = [](int m, bool working) {
+      const double at40 = working ? 16.2 : 13.2, perMhz = working ? (28.4 - 16.2) / 40 : (22.0 - 13.2) / 40;
+      return at40 + (m - 40) * perMhz;
+    };
+    double charge = 0;  // mA x us
+    enum Kind { WORKING, IDLE, ASLEEP };
+    auto spend = [&](int64_t us, Kind kind) {
+      if (us <= 0) return;
+      while (t + us >= nextStall) {  // a stall freezes the loop (a flash write, the radio stack) wherever it happens
+        const int64_t s = (int64_t)((20 + 280 * r.uni()) * 1000);
+        workUs += s;
+        charge += (double)s * mA(mhz, true);
+        t += s;
+        nextStall = t + (int64_t)(stallEverySec * 1e6 * r.uni() * 2);
+      }
+      if (kind == ASLEEP && nextStall != INT64_MAX) nextStall += us;  // (no stalls while asleep)
+      t += us;
+      if (kind == WORKING) {
+        workUs += us;
+        charge += (double)us * mA(mhz, true);
+      } else if (kind == IDLE) {
+        idleUs += us;
+        charge += (double)us * mA(mhz, false);
+      } else {
+        asleepUs += us;
+        charge += (double)us * 0.24;
+      }
+    };
+    auto cost = [&](double us80) { return (int64_t)(us80 * 80.0 / mhz * (0.9 + 0.2 * r.uni())); };
+    auto radioOn = [&](int64_t at) { return ((at - start) / 1000000) % 900 < 6; };  // a 6 s session every 15 min
+    while (t < end) {
+      if (t >= nextPress) {  // a press (recorded by interrupt whenever it came): the loop takes it now
+        const int64_t after = t - nextPress;
+        if (after > worstPressUs) worstPressUs = after;
+        if (pressWokeIt && after > worstPressAsleepUs) worstPressAsleepUs = after;
+        pressWokeIt = false;
+        presses++;
+        pokeUntil = t + 8000000;
+        force = true;
+        bannerUntil = t + 2200000;
+        nextPress = t + (int64_t)(pressEverySec * (0.5 + r.uni()) * 1e6);
+      }
+      if (bannerUntil != 0 && t >= bannerUntil) {  // the banner comes down: a redraw
+        if (t - bannerUntil > worstBannerUs) worstBannerUs = t - bannerUntil;
+        if (t >= pokeUntil && t - bannerUntil > worstBannerIdleUs) worstBannerIdleUs = t - bannerUntil;
+        bannerUntil = 0;
+        force = true;
+      }
+      // the CPU clock (clock_policy.h): up at once, down only between frames
+      const int want = radioOn(t) || t < pokeUntil ? 80 : idleMhz;
+      time_t sec;
+      int32_t usec;
+      splitUs(t, &sec, &usec);
+      if (want != mhz && (want > mhz || p.quiet(usec))) {
+        p.clockChanged((uint32_t)mhz, (uint32_t)want);
+        mhz = want;
+      }
+      const FramePlanner::Step st = p.next(sec, usec, force);
+      auto send = [&](bool scheduled) {
+        const int64_t c = cost(15000);
+        spend(c, WORKING);
+        if (scheduled) {  // (recordLateness())
+          frames++;
+          const int64_t lateUs = (t - (int64_t)p.preparedSec() * 1000000) + p.latencyUs();
+          if (lateUs > 30000) late++;
+          if (lateUs > worstLateUs) worstLateUs = lateUs;
+        }
+        p.sent((uint32_t)c);
+        force = false;
+      };
+      bool napTime = false;
+      switch (st.action) {
+        case FramePlanner::DRAW_NOW: {
+          const int64_t c = cost(30000);
+          spend(c, WORKING);
+          p.drew(st.sec, (uint32_t)c, false);
+          send(false);
+          break;
+        }
+        case FramePlanner::PREPARE: {
+          const int64_t c = cost(30000);
+          spend(c, WORKING);
+          p.drew(st.sec, (uint32_t)c, true);
+          break;
+        }
+        case FramePlanner::SEND:
+          spend(st.waitUs, WORKING);  // (spun)
+          send(p.preparedScheduled());
+          break;
+        case FramePlanner::SLEEP:
+          napTime = true;
+          break;
+        default:
+          if (p.quiet(usec)) {  // readSlowSensors()
+            if (lastBattery == 0 || t - lastBattery >= 5000000) {
+              if (lastBattery && t - lastBattery > worstBatteryGapUs) worstBatteryGapUs = t - lastBattery;
+              spend(cost(3000), WORKING);
+              lastBattery = t;
+            }
+            if (lastSensor == 0 || t - lastSensor >= 10000000) {
+              spend(15000, IDLE);  // (the SHTC3 measures while the loop waits)
+              spend(cost(2000), WORKING);
+              lastSensor = t;
+            }
+          }
+          splitUs(t, &sec, &usec);
+          if (t >= nextLog && usec <= 200000) {  // servicePowerLog()
+            if (t - nextLog > worstLogLateUs) worstLogLateUs = t - nextLog;
+            spend(150000, WORKING);
+            logLines++;
+            nextLog += 600 * 1000000LL;
+          }
+          napTime = true;
+          break;
+      }
+      if (!napTime) continue;
+      bool slept = false;
+      if (lightSleep) {  // lightSleepStep(), and slowWorkInUs()
+        splitUs(t, &sec, &usec);
+        lightsleep::Inputs in;
+        in.enabled = true;
+        in.radio = radioOn(t);
+        in.button = t >= nextPress;  // a change in the record that the loop has not taken yet
+        in.poked = t < pokeUntil;
+        in.busy = force;
+        in.frameInUs = p.idleUs(sec, usec);
+        const int32_t toTick = 1000000 - usec;
+        if (lastBattery == 0 || t - lastBattery >= 5000000 || lastSensor == 0 || t - lastSensor >= 10000000) {
+          in.workInUs = p.quiet(usec) ? 0 : toTick;
+        }
+        if (t >= nextLog) {
+          const int32_t at = usec <= 200000 ? 0 : toTick;
+          if (at < in.workInUs) in.workInUs = at;
+        }
+        if (bannerUntil) in.otherInUs = bannerUntil <= t ? 0 : (int32_t)std::min<int64_t>(bannerUntil - t, lightsleep::kMaxSleepUs);
+        const lightsleep::Decision d = lightsleep::decide(in);
+        if (d.sleep) {
+          sleeps++;
+          spend(5000, WORKING);  // the calibration, the way in and out
+          int64_t us = d.us - 5000 + (int64_t)(d.us * 0.002 * (2 * r.uni() - 1)) + (int64_t)(3000 * r.uni()) - 1000;
+          if (t + us > nextPress) {  // KEY ends it: awake a millisecond after the press
+            us = nextPress + 1000 - t;
+            pressWokeIt = true;
+          }
+          spend(us, ASLEEP);
+          slept = true;
+        }
+      }
+      if (!slept) spend(st.action == FramePlanner::SLEEP && st.waitUs <= 12000 ? 1000 + (int64_t)(r.uni() * 1000) : 4000 + (int64_t)(r.uni() * 1000), IDLE);
+    }
+    totalUs = t - start;
+    chipMa = charge / (double)totalUs;
+  }
+};
+
+void testLightSleepLoop() {
+  section("light sleep: a simulated UI loop");
+  const int kSeconds = 3 * 3600;
+  for (int mhz : {20, 40, 80}) {
+    SleepLoop off, on;
+    off.lightSleep = false;
+    off.idleMhz = on.idleMhz = mhz;
+    off.run(kSeconds, 21);
+    on.run(kSeconds, 21);
+    printf("  idle clock %d MHz: asleep %.1f %% of the time, working %.1f %%, awake and idle %.1f %%; the chip %.1f mA without, %.1f mA with"
+           " (datasheet model)\n",
+           mhz, 100.0 * on.asleepUs / on.totalUs, 100.0 * on.workUs / on.totalUs, 100.0 * on.idleUs / on.totalUs, off.chipMa, on.chipMa);
+    printf("    frames late: %d of %d with (worst %.1f ms), %d of %d without (worst %.1f ms); battery read %.1f s apart at worst; log lines"
+           " %.2f s late at worst; presses taken %.1f ms after at worst, %.1f ms when it slept; banner down %.1f ms late at worst, %.1f ms"
+           " with no button pressed\n",
+           on.late, on.frames, on.worstLateUs / 1000.0, off.late, off.frames, off.worstLateUs / 1000.0, on.worstBatteryGapUs / 1e6,
+           on.worstLogLateUs / 1e6, on.worstPressUs / 1000.0, on.worstPressAsleepUs / 1000.0, on.worstBannerUs / 1000.0,
+           on.worstBannerIdleUs / 1000.0);
+    CHECK(on.frames > kSeconds * 9 / 10 && off.frames > kSeconds * 9 / 10);
+    CHECK(on.late <= off.late);
+    CHECK(on.worstLateUs <= off.worstLateUs + 5000);
+    CHECK(off.asleepUs == 0 && off.sleeps == 0 && on.sleeps > kSeconds);
+    CHECK(on.asleepUs > (mhz == 20 ? 0.70 : 0.85) * on.totalUs);  // (the model's own figures; the board's are unknown)
+    CHECK(on.worstBatteryGapUs < 7000000);  // every 5 s, and a second or two late at worst
+    CHECK(on.logLines >= kSeconds / 600 - 1 && on.worstLogLateUs < 2000000);
+    CHECK(on.presses > 10 && on.worstPressAsleepUs >= 0 && on.worstPressAsleepUs < 5000);  // KEY ends a sleep at once ...
+    CHECK(on.worstPressUs < 45000 * 1.1 * 80 / mhz + 10000);  // ... and otherwise a press waits for a frame at most
+    CHECK(on.worstBannerIdleUs >= 0 && on.worstBannerIdleUs < 6000);  // a banner comes down on time (the sleep ends before)
+    CHECK(on.chipMa < off.chipMa * 0.5);
+  }
+  {  // stalls of 20 to 300 ms every 8 s awake on average: no more late frames than without light sleep, and a press
+     // every half a minute: taken as soon as without it
+    SleepLoop off, on;
+    off.lightSleep = false;
+    off.stallEverySec = on.stallEverySec = 8;
+    off.pressEverySec = on.pressEverySec = 30;
+    off.run(3600, 9);
+    on.run(3600, 9);
+    printf("  stalls every 8 s awake, a press every 30 s: %d of %d frames late with light sleep (worst %.0f ms), %d of %d without (worst %.0f ms);"
+           " presses taken %.1f ms after at worst with, %.1f ms without; asleep %.1f %%\n",
+           on.late, on.frames, on.worstLateUs / 1000.0, off.late, off.frames, off.worstLateUs / 1000.0, on.worstPressUs / 1000.0,
+           off.worstPressUs / 1000.0, 100.0 * on.asleepUs / on.totalUs);
+    CHECK(on.late <= off.late + 2);
+    CHECK(on.worstPressUs <= off.worstPressUs + 5000);
+  }
+  {  // display_power = low: every frame goes out 43 ms earlier in its second (the panel takes that much longer); no more
+     // late frames for it, and the chip sleeps about as much
+    SleepLoop hpm, lpm;
+    lpm.latencyUs = dispower::latencyUs(true, 20000);
+    hpm.run(kSeconds, 21);
+    lpm.run(kSeconds, 21);
+    printf("  display_power = low, idle clock 20 MHz: asleep %.1f %% (%.1f %% with normal), frames late %d of %d (%d of %d), worst %.1f ms"
+           " (%.1f ms)\n",
+           100.0 * lpm.asleepUs / lpm.totalUs, 100.0 * hpm.asleepUs / hpm.totalUs, lpm.late, lpm.frames, hpm.late, hpm.frames,
+           lpm.worstLateUs / 1000.0, hpm.worstLateUs / 1000.0);
+    CHECK(lpm.frames > kSeconds * 9 / 10);
+    CHECK(lpm.late <= hpm.late && lpm.worstLateUs <= hpm.worstLateUs + 5000);
+    CHECK(lpm.asleepUs > 0.70 * lpm.totalUs && lpm.asleepUs > hpm.asleepUs - 0.02 * hpm.totalUs);
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -1224,6 +1907,11 @@ int main() {
   testConsolePolicy();
   testPicker();
   testFramePlanClock();
+  testFramePlanIdle();
+  testLightSleepDecide();
+  testNapSteps();
+  testWallFix();
+  testLightSleepLoop();
   printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed ? 1 : 0;
 }

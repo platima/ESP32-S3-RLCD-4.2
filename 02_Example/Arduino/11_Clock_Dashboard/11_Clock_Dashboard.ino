@@ -36,9 +36,11 @@
 #include "clock_policy.h"
 #include "config.h"
 #include "console_policy.h"
+#include "display_power.h"
 #include "frame_plan.h"
 #include "fw_update.h"
 #include "infinity_cube.h"
+#include "light_sleep.h"
 #include "log.h"
 #include "low_battery.h"
 #include "moon.h"
@@ -90,6 +92,12 @@ static uint32_t s_clockSwitches = 0;      // how often the clock was changed (sh
 static const char *s_clockReason = "";    // why the clock is where it is, for the Power page
 static int s_clockRefusedMhz = 0;         // a clock the core would not set: not asked for again
 static bool usbHostAttached();            // (defined with the clock code further down)
+
+// Light sleep between the frames (light_sleep = on, light_sleep.h)
+static lightsleep::Stats s_sleepStats;               // how much of the time the chip slept
+static lightsleep::WallFix s_wallFix;                // the time of day after a nap
+static lightsleep::Why s_sleepWhy = lightsleep::OFF;  // why it did or did not sleep, the last time the loop asked
+static uint32_t s_sleepRefusedMs = 0;                // the SDK refused to sleep then (0 = it did not): wait a while
 
 // The USB serial console (console_policy.h, log.h)
 static_assert((int)CONSOLE_ON == (int)consolepolicy::ON && (int)CONSOLE_AUTO == (int)consolepolicy::AUTO &&
@@ -217,8 +225,20 @@ static void handleBoot(ClickEvent e) {
   s_forceRedraw = true;
 }
 
+// display_power: how the controller drives the panel (its low power mode at 8 Hz, or the high one at 25.5 Hz,
+// display_power.h), and the frame timing that goes with it.  The cube runs in the high power mode whatever the
+// setting: it sends frames as fast as it can draw them, and 8 a second would make it judder.  A switch takes 120 ms
+// into the low power mode and 320 ms out of it (the datasheet's waits).
+static void applyDisplayPower() {
+  if (!s_lcd) return;
+  const bool low = g_cfg.displayPower == DISPPOWER_LOW && !s_cubeOn;
+  s_lcd->setLowPower(low);
+  s_planner.setLatencyUs(dispower::latencyUs(low, DISPLAY_LATENCY_MS * 1000));
+}
+
 static void cubeBegin(uint32_t nowMs) {
   s_cubeOn = true;
+  applyDisplayPower();
   s_cube.seed = esp_random() | 1u;  // it tumbles another way every time
   s_cube.turnMs = 0;
   s_cube.elapsedMs = 0;
@@ -228,6 +248,7 @@ static void cubeBegin(uint32_t nowMs) {
 
 static void cubeEnd() {
   s_cubeOn = false;
+  applyDisplayPower();
   s_forceRedraw = true;  // the clock again, at once
 }
 
@@ -679,6 +700,11 @@ static void buildInfoPower(UiModel &m, const SharedState &s) {
     }
     add("Radio", v);
   }
+  if (g_cfg.lightSleep) {  // light_sleep = on: how much of the time the chip slept, and what keeps it awake now
+    char row[lightsleep::kRow];
+    lightsleep::formatRow(s_sleepStats.permille(esp_timer_get_time()), s_sleepWhy, row);
+    add("Sleep", row);
+  }
   if (psramFound()) add("PSRAM", "ON: wastes power (Tools > PSRAM)");
   if (!g_consoleOn) {  // (a line holds 42 characters of value)
     add("Console", "off: restart with KEY held to get it back");
@@ -733,6 +759,11 @@ static void buildInfoPower(UiModel &m, const SharedState &s) {
     snprintf(v, sizeof v, "at %.2f V, back on at %.2f V", (double)g_cfg.batteryCutoffV, (double)lowbat::kRestartV);
   }
   add("Shutdown", v);
+  // display_power = low: say so, and whether the panel is in it now.  (On a page with room for it and the three rows
+  // below: on the fullest page, with the PSRAM warning and the log's two rows, it is the one left out.)
+  if (g_cfg.displayPower == DISPPOWER_LOW && n < UI_INFO_LINES - 3) {
+    add("Display", s_lcd && s_lcd->lowPower() ? "low power mode, 8 Hz refresh" : "low power mode chosen, not in it");
+  }
 
   // (a line holds 42 characters of value)
   if (!g_cfg.wifi) {
@@ -784,6 +815,7 @@ static void buildPowerLogReading(powerlog::Reading &r, uint32_t nowSec) {
   r.uptimeSec = nowSec;
   r.cpuMhz = (int)getCpuFrequencyMhz();
   r.clockReason = g_cfg.cpuIdleMhz() > 0 ? s_clockReason : "";  // (as the Power line: a reason only with an idle clock)
+  r.asleepPermille = s_sleepStats.permille(esp_timer_get_time());  // (written only with light_sleep = on, as the Sleep line)
   r.batteryPresent = s_batHave;
   r.batteryVolts = s_batVolts;
   r.charge = s_chargeState;
@@ -1157,9 +1189,21 @@ static void serviceSerial() {
         Serial.printf("console %s%s; buttons %s; audio chips: %s\n",
                       g_cfg.console == CONSOLE_ON ? "on" : (g_cfg.console == CONSOLE_AUTO ? "auto" : "off"),
                       s_consoleKeep ? " (kept on for this run: KEY was held at start-up)" : "",
-                      buttonEdgesOn() ? "read by interrupt as well (idle clock)" : "read by the loop",
+                      buttonEdgesOn() ? "read by interrupt as well (idle clock or light sleep)" : "read by the loop",
                       s_audioStandby < 0 ? "left alone (AUDIO_CHIPS_STANDBY 0)"
                                          : (s_audioStandby == (AUDIO_CODEC_ANSWERED | AUDIO_MIC_ADC_ANSWERED) ? "both powered down" : "not both answered (see the start of the log)"));
+        Serial.printf("display: %s; frames timed for %d ms on the way to the glass\n",
+                      s_lcd && s_lcd->lowPower() ? "low power mode, 8 Hz (display_power = low)" : "high power mode, 25.5 Hz",
+                      (int)(s_planner.latencyUs() / 1000));
+        if (g_cfg.lightSleep) {  // (with the console on these stay at 0: the console keeps the chip awake)
+          char row[lightsleep::kRow];
+          lightsleep::formatRow(s_sleepStats.permille(esp_timer_get_time()), s_sleepWhy, row);
+          Serial.printf("light sleep: %s; %u naps, %u ended by a button, %u refused; time of day put right %u times, by up to %d us\n",
+                        row, (unsigned)s_sleepStats.naps(), (unsigned)s_sleepStats.buttonWakes(), (unsigned)s_sleepStats.refused(),
+                        (unsigned)s_wallFix.fixes(), (int)s_wallFix.largestUs());
+        } else {
+          Serial.println("light sleep: off (light_sleep = off)");
+        }
         char rows[2][powerlog::kStatusRow];
         const int count = powerlog::statusRows(powerLogStatus((uint32_t)(esp_timer_get_time() / 1000000)), rows);
         uint32_t lastMs, worstMs;  // what a line costs in time: the flash is busy for most of it
@@ -1230,6 +1274,7 @@ static void lowBatteryGate() {
   LOGF(TAG, "battery %.2f V: too low to start (%s)", b.volts, timerWake ? "timer check" : "button or power-up");
   if (!timerWake) {
     initDisplay();
+    applyDisplayPower();
     u8g2_ClearBuffer(s_u8g2);
     uiDrawBatteryEmpty(s_u8g2, b.volts, lowbat::kRestartV, true);
     u8g2_SendBuffer(s_u8g2);
@@ -1328,6 +1373,57 @@ static void serviceClock(uint32_t nowMs, int32_t usec) {
   const int want = clockpolicy::target(needs, g_cfg.cpuMhz(), idle);
   s_clockReason = want == idle ? "idle" : (needs.radio ? "radio on" : (needs.usbHost ? "USB attached" : "button"));
   if (clockpolicy::mayChange((int)getCpuFrequencyMhz(), want, s_planner.quiet(usec))) applyClock(want);
+}
+
+// Is slow work due (readSlowSensors(), servicePowerLog()), and when can it run: 0 = now, lightsleep::kNever = none is due.
+// Each kind has its part of the second, and each part begins at the tick.
+static int32_t slowWorkInUs(uint32_t nowMs, int32_t usec) {
+  const int32_t toTick = 1000000 - usec;
+  int32_t in = lightsleep::kNever;
+  const bool sensors = s_lastSensorMs == 0 || nowMs - s_lastSensorMs >= SENSOR_INTERVAL_MS;
+  const bool battery = s_lastBatMs == 0 || nowMs - s_lastBatMs >= BATTERY_INTERVAL_MS;
+  if (sensors || battery) in = s_planner.quiet(usec) ? 0 : toTick;
+  if (powerLogDue((uint32_t)(esp_timer_get_time() / 1000000))) {
+    const int32_t at = usec <= powerlog::kLatestStartUs ? 0 : toTick;
+    if (at < in) in = at;
+  }
+  return in;
+}
+
+// light_sleep = on: a light sleep until the next thing is due, in place of a nap, when nothing needs the chip awake
+// (light_sleep.h).  False when it did not sleep: the caller naps as before.
+static bool lightSleepStep() {
+  if (!g_cfg.lightSleep) return false;
+  struct timeval tv;
+  gettimeofday(&tv, nullptr);
+  const uint32_t nowMs = millis();
+  s_sleepStats.begin(esp_timer_get_time());
+  lightsleep::Inputs in;
+  in.enabled = true;
+  in.radio = netRadioNeedsFastClock();
+  in.console = g_consoleOn;
+  // (a change the interrupts recorded while the loop was busy counts too: pollButtons() takes it next time round)
+  in.button = digitalRead(PIN_KEY) == LOW || digitalRead(PIN_BOOT) == LOW || s_key.isDown() || s_boot.isDown() || buttonEdgesPending();
+  in.poked = s_pokeUntilMs != 0;
+  in.busy = s_forceRedraw || s_restartAsked || s_cubeOn;
+  in.backOff = s_sleepRefusedMs != 0 && (uint32_t)(nowMs - s_sleepRefusedMs) < lightsleep::kRetryMs;
+  if (!in.backOff) s_sleepRefusedMs = 0;  // (over: a time long past must not come round again)
+  in.frameInUs = s_planner.idleUs(tv.tv_sec, (int32_t)tv.tv_usec);
+  in.workInUs = slowWorkInUs(nowMs, (int32_t)tv.tv_usec);
+  if (s_toast[0]) {  // the banner comes down then
+    const int32_t ms = (int32_t)(s_toastUntilMs - nowMs);
+    in.otherInUs = ms <= 0 ? 0 : (ms >= lightsleep::kMaxSleepUs / 1000 ? lightsleep::kMaxSleepUs : ms * 1000);
+  }
+  const lightsleep::Decision d = lightsleep::decide(in);
+  s_sleepWhy = d.why;
+  if (!d.sleep) return false;
+  const lightsleep::Nap nap = powerLightSleep(d.us, s_wallFix);
+  s_sleepStats.add(nap);
+  if (nap.err != 0) {
+    s_sleepRefusedMs = millis() | 1u;
+    s_sleepWhy = lightsleep::REFUSED;
+  }
+  return nap.slept;
 }
 
 // A short note about what the SD card did, if anything, or about a built-in default that was refused
@@ -1435,8 +1531,11 @@ void setup() {
 
   cfgImportSdCard();  // a settings file on an SD card, applied and saved to flash
   applyCpuSetting();  // ... which may have changed the clock speed
-  if (g_cfg.cpuIdleMhz() > 0) buttonEdgesBegin();  // a frame at the idle clock can outlast a tap: the buttons by interrupt too
+  // the buttons by interrupt too: a frame at the idle clock can outlast a tap, and in light sleep the press that wakes
+  // the chip is recorded the moment it is awake (button_edges.h)
+  if (g_cfg.cpuIdleMhz() > 0 || g_cfg.lightSleep) buttonEdgesBegin();
   initDisplay();
+  applyDisplayPower();  // display_power, as the settings have it now (an SD card may have changed it)
   fwUpdateFromCard(showFirmwareScreen);  // a firmware file on the card: install it and restart (else carry on)
   powerLogBegin();                       // power_log = on: the flash partition the log is kept in
   s_guard.configure(g_cfg.lowBatteryShutdown && g_cfg.hasBattery() && !s_guardOverride, g_cfg.batteryCutoffV);
@@ -1511,12 +1610,12 @@ void loop() {
       flushFrame();
       break;
     case FramePlanner::SLEEP:
-      delay(step.waitUs > 12000 ? 4 : 1);  // short naps, so the buttons keep being polled
+      if (!lightSleepStep()) delay(step.waitUs > 12000 ? 4 : 1);  // short naps, so the buttons keep being polled
       break;
     default:
       if (s_planner.quiet((int32_t)tv.tv_usec)) readSlowSensors(nowMs);  // never close to a tick
       servicePowerLog((int32_t)tv.tv_usec);                               // (nor this: only early in a second)
-      delay(4);
+      if (!lightSleepStep()) delay(4);
       break;
   }
 #endif

@@ -6,9 +6,10 @@
 // WiFi stack taking the memory bus, a flash write on the other core), while sending
 // it is short.  So the coming second is drawn into the display buffer early, with
 // room to spare, and sent just before it starts: the draw may run long without the
-// digits changing late.  The panel refreshes itself at about 25 Hz, so a frame shows
-// up 0-39 ms after it has been sent; the send is timed to end `latencyUs` before the
-// second starts, which puts the average error at zero.
+// digits changing late.  The panel refreshes itself at 25.5 Hz, so a frame shows
+// up 0-39 ms after it has been sent (0-125 ms at the 8 Hz of display_power = low,
+// display_power.h); the send is timed to end `latencyUs` before the second starts,
+// which puts the average error at zero.
 //
 // Pure logic with no Arduino dependency: the UI loop asks next() whenever it wakes up
 // and does what it says; tools/tests drives it with simulated clocks and stalls.
@@ -75,6 +76,25 @@ class FramePlanner {
     return st;  // IDLE
   }
 
+  // How long the loop may leave the planner alone (light_sleep.h): the time until next() asks for more than a
+  // nap, PREPARE or SEND, if nothing is forced meanwhile.  0 when it asks for something now.
+  int32_t idleUs(time_t sec, int32_t usec) const {
+    const int32_t usToNext = 1000000 - usec;
+    const int32_t sendLead = (int32_t)sendCostUs_ + latencyUs_;
+    const int32_t drawLead = sendLead + (int32_t)drawCostUs_ + kMarginUs;
+    if (prepared_) {
+      if (preparedSec_ <= sec || preparedSec_ > sec + 1) return 0;  // due, or the clock went backwards (next() starts over)
+      const int32_t waitUs = usToNext - sendLead;
+      return waitUs > kSpinUs ? waitUs - kSpinUs : 0;  // SEND, once the wait is down to what is spun
+    }
+    if (lastSentSec_ == sec + 1) {  // the coming second is out already: the one after it is prepared in the next second
+      const int32_t into = 1000000 - drawLead;
+      return usToNext + (into > 0 ? into : 0);
+    }
+    if (lastSentSec_ != sec) return 0;  // behind: DRAW_NOW
+    return usToNext > drawLead ? usToNext - drawLead : 0;
+  }
+
   // May slow work (I2C sensors, battery) run now?  Never close to a tick.
   bool quiet(int32_t usec) const { return !prepared_ && 1000000 - usec > kQuietUs; }
 
@@ -111,6 +131,9 @@ class FramePlanner {
   uint32_t drawCostUs() const { return drawCostUs_; }
   uint32_t sendCostUs() const { return sendCostUs_; }
   int32_t latencyUs() const { return latencyUs_; }
+  // The panel was switched to another refresh rate (display_power.h).  A frame that is prepared already goes out
+  // by the new figure.
+  void setLatencyUs(int32_t us) { latencyUs_ = us; }
 
  private:
   // One freak measurement (a stall in the middle of a draw) must not move the schedule for long.  (The

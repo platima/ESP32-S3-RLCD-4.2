@@ -1,5 +1,7 @@
 #include "button_edges.h"
 
+#include <driver/gpio.h>
+
 #include "config.h"
 
 namespace {
@@ -43,6 +45,26 @@ void buttonEdgesEnd() {
 }
 
 bool buttonEdgesOn() { return s_on; }
+
+bool buttonEdgesPending() { return s_log[BUTTON_KEY].head != s_log[BUTTON_KEY].tail || s_log[BUTTON_BOOT].head != s_log[BUTTON_BOOT].tail; }
+
+void buttonEdgesSleep(bool asleep) {
+  const uint8_t pins[2] = {PIN_KEY, PIN_BOOT};
+  for (int b = 0; b < 2; b++) {
+    const gpio_num_t pin = (gpio_num_t)pins[b];
+    if (asleep) {
+      gpio_intr_disable(pin);                         // first, so the level type below cannot call the handler
+      gpio_wakeup_enable(pin, GPIO_INTR_LOW_LEVEL);  // (it sets the pin's interrupt type to that level too)
+    } else {
+      gpio_wakeup_disable(pin);
+      gpio_set_intr_type(pin, GPIO_INTR_ANYEDGE);  // what attachInterrupt(CHANGE) set
+      if (s_on) {
+        if (digitalRead(pins[b]) == LOW) record(s_log[b], pins[b]);  // down already: the press that woke the chip
+        gpio_intr_enable(pin);
+      }
+    }
+  }
+}
 
 bool buttonEdgeTake(ButtonId button, bool *down, uint32_t *atMs) {
   EdgeLog &q = s_log[button];

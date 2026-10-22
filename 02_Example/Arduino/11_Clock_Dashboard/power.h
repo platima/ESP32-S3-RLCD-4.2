@@ -5,6 +5,8 @@
 
 #include <Arduino.h>
 
+#include "light_sleep.h"
+
 // Sets the CPU clock (80, 160 or 240 MHz; WiFi works from 80 up).  Does nothing if it is already
 // there.  Once the display is running, wrap the call in ST7305_U8g2::busRelease() / busAcquire():
 // the core tells every SPI bus about a clock change and waits for its lock.
@@ -22,6 +24,10 @@ void powerForgetLowShutdown();
 
 // True once the clock is on its way to deep sleep: the network task then leaves the radio alone.
 extern volatile bool g_powerDown;
+
+// light_sleep = on: one light sleep of up to `us` microseconds, ended early by KEY or BOOT (light_sleep.h says when,
+// and how the steps go).  The UI loop calls it, with the buttons recorded by interrupt (buttonEdgesBegin()).
+lightsleep::Nap powerLightSleep(int32_t us, lightsleep::WallFix &fix);
 
 // Deep sleep; never returns.  The display keeps its picture, the timer wakes the chip every few
 // minutes to look at the battery, and a press of KEY wakes it too (BOOT cannot: GPIO0 is the

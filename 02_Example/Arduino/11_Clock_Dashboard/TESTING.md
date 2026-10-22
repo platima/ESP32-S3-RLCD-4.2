@@ -43,9 +43,10 @@ the analogue clock's outline (1.9) and both cubes with their buttons (1.8, 1.9).
     on a PC, from the third hour off the charger on, 72 of 73 hourly figures were within 15 % of the time really
     left, and in the first three hours the figure is short (never long). Still to be seen on the board.
 12. **Partly.** A run down to the shutdown, 17 to 20 October (firmware 1.9, the settings above): 81 hours from a full
-    charge to 3.30 V, a line every ten minutes to the last (3.307 V). It gave the battery curve of 1.10. Not reported
-    yet: the low-battery blink, the battery-empty screen, and the shutdown itself (the wake by timer and by KEY, the
-    3-second override). What the board draws while the clock sleeps has not been measured (`sleeptest`).
+    charge to 3.30 V, a line every ten minutes to the last (3.307 V). It gave the battery curve of 1.10. **Seen:** the
+    low-battery blink, then the battery-empty screen at the shutdown. Not reported yet: the wake by timer and by KEY
+    while it sleeps, and the 3-second override. What the board draws while the clock sleeps has not been measured
+    (`sleeptest`).
 13. **Partly.** The five battery runs (stock on WiFi, stock without WiFi, a middle ground, 20 MHz on WiFi, 20 MHz
     without WiFi). Only the fourth has been logged (the settings above): 81 hours, 3.4 days, from full to the
     shutdown.
@@ -94,3 +95,37 @@ the analogue clock's outline (1.9) and both cubes with their buttons (1.8, 1.9).
 35. **Partly.** The newer screens on the real panel for contrast and legibility: the legend, the firmware update
     screen, the weather band with its moon and rain.
 36. **Partly.** The cubes: whether the frame rate looks smooth.
+
+## Light sleep (1.11)
+
+37. **Not yet.** `light_sleep = on`, with the settings of 24 (`wifi_mode = sync`, `cpu_idle_mhz = 20`, `console` auto
+    or off). Worth a run of its own in the log (the sheet's sixth line).
+    * The meter on USB (5 V, battery out), with it on and with it off, ten seconds after the last button press: the
+      estimate is about 15 mA (14 to 16) against the 21 mA of 24. The *Sleep* row of *Power and settings* should say
+      some 75 to 80 % at 20 MHz once the radio has been off for a while (it counts from the start).
+    * The *Frames* line after a day: no more late frames than in 16 (7 in three and a half days, the worst 307 ms).
+    * Buttons: every press of KEY and BOOT answered as before, single, double and long, also the first press after a
+      quiet minute (that one wakes the chip); KEY held for five seconds still restarts the clock.
+    * The time overnight: the clock against a phone in the evening and in the morning, and the *Drift* line on
+      *Power and settings* after a day of hourly syncs, against what it says with light sleep off. (With WiFi off
+      nothing corrects the clock: try that only once the drift with sync mode is known.)
+    * The low-battery shutdown at the end of a run with light sleep (12) still wakes by KEY and by the five-minute
+      timer, and not by BOOT. (`sleeptest` cannot show it: the console it needs keeps the chip from light sleep.)
+
+## The display's low power mode (1.11)
+
+38. **Not yet.** `display_power = low`, with the settings of 37 (or of 24 if light sleep is off). Worth a run of its
+    own in the log (the sheet's seventh line).
+    * The meter on USB (5 V, battery out), ten seconds after the last button press, with `display_power = low` and with
+      `normal`, nothing else changed (each is a restart): the difference is what it saves. The guess is about 1 mA;
+      nothing published says more, so anything from nothing to 2 mA would not be a surprise. The *Power and settings*
+      page should have a *Display* row saying `low power mode, 8 Hz refresh`.
+    * The picture at 8 refreshes a second next to 25.5: contrast and legibility in daylight and in lamp light, and
+      from the side; no flicker or shimmer, no smearing of the seconds, no ghost of the digits before.
+    * The seconds against a reference (a phone's clock with seconds, or a radio time signal): they should change within
+      about a twentieth of a second of it, sometimes a little before and sometimes a little after, drifting slowly
+      between the two; never clearly late.
+    * Buttons and page changes still feel immediate (up to 125 ms instead of 39 before they show).
+    * The cubes: they run in the high power mode, so they should look as smooth as with `normal`; starting one takes
+      about a third of a second longer, and afterwards the *Display* row is back.
+    * After a day: the *Frames* line, no more late frames than without it.
